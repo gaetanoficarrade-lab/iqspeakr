@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Build artefacts
+build/
+dist/
+*.spec
+
+# Release-Artefakte — gehoeren in GitHub Releases, nicht ins Repo
+*.dmg
+*.exe
+*.zip
+
+# Local logs
+*.log
+
+# OS/editor
+.idea/
+.vscode/
+*.swp
+*.swo
