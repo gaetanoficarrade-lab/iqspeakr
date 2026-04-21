@@ -1,7 +1,6 @@
-openai-whisper
+faster-whisper
 sounddevice
 numpy
-pystray
-Pillow
+PySide6
 pynput
 pyperclip

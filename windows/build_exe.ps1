@@ -1,11 +1,10 @@
 # ============================================================
-#  IQspeakr — Windows Build Script (PowerShell)
+#  IQspeakr - Windows Build Script (PowerShell)
 #  Baut eine .exe mit PyInstaller und legt sie in dist\ ab.
 # ============================================================
 #
 # Voraussetzungen:
 #   - Python 3.10+ installiert und im PATH
-#   - ffmpeg.exe im PATH ODER im Verzeichnis `bin\` neben dieser ps1
 #   - Internet fuer pip + Whisper-Modell-Download beim ersten Start
 #
 # Ausfuehren (PowerShell im Projekt-Ordner):
@@ -38,7 +37,7 @@ if (Test-Path "icon.ico") {
     $IconArg = "--icon=icon.ico"
     Write-Host "  gefunden: icon.ico" -ForegroundColor DarkGray
 } else {
-    Write-Host "  kein icon.ico — .exe bekommt Default-Icon" -ForegroundColor Yellow
+    Write-Host "  kein icon.ico - .exe bekommt Default-Icon" -ForegroundColor Yellow
 }
 
 Write-Host "[4/4] PyInstaller..." -ForegroundColor Cyan
@@ -52,12 +51,29 @@ if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
 $args = @(
     "--name", "IQspeakr",
     "--windowed",
-    "--onefile",
+    "--onedir",
     "--noconfirm",
     "--clean",
-    "--collect-all", "whisper",
-    "--collect-submodules", "pystray",
+    # UPX beschaedigt dynamische Libraries (CFG-Code-Pages) und kann zu
+    # Access Violations fuehren - defensiv deaktivieren.
+    "--noupx",
+    "--collect-all", "faster_whisper",
+    "--collect-all", "ctranslate2",
+    "--collect-all", "onnxruntime",
+    "--collect-all", "tokenizers",
     "--collect-submodules", "pynput",
+    "--exclude-module", "pystray",
+    "--exclude-module", "PIL.ImageTk",
+    "--exclude-module", "tkinter",
+    "--exclude-module", "PySide6.Qt3DCore",
+    "--exclude-module", "PySide6.Qt3DRender",
+    "--exclude-module", "PySide6.QtWebEngineCore",
+    "--exclude-module", "PySide6.QtWebEngineWidgets",
+    "--exclude-module", "PySide6.QtWebEngineQuick",
+    "--exclude-module", "PySide6.QtMultimediaWidgets",
+    "--exclude-module", "PySide6.QtCharts",
+    "--exclude-module", "PySide6.QtDataVisualization",
+    "--exclude-module", "PySide6.QtQuick3D",
     "--add-data", "config.json;."
 )
 if ($IconArg) { $args += "--icon=icon.ico" }
@@ -67,10 +83,9 @@ $args += "app.py"
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
-Write-Host "  IQspeakr.exe ist bereit:" -ForegroundColor Green
-Write-Host "  $ProjectDir\dist\IQspeakr.exe" -ForegroundColor Green
+Write-Host "  IQspeakr ist bereit (--onedir):" -ForegroundColor Green
+Write-Host "  $ProjectDir\dist\IQspeakr\IQspeakr.exe" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Naechster Schritt: dist\IQspeakr.exe direkt starten oder" -ForegroundColor DarkGray
-Write-Host "in den Windows-Autostart-Ordner legen:" -ForegroundColor DarkGray
-Write-Host "  shell:startup" -ForegroundColor DarkGray
+Write-Host "Weitergabe: kompletten Ordner dist\IQspeakr\ zippen." -ForegroundColor DarkGray
+Write-Host "Autostart: Verknuepfung zu IQspeakr.exe nach shell:startup." -ForegroundColor DarkGray
