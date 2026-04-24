@@ -214,19 +214,12 @@ class PillOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(40)  # ~25 fps
         self._timer.timeout.connect(self._tick)
-        self._timer.start()
+        # Timer laeuft nur waehrend Aufnahme — im Idle nichts zu animieren.
 
-        # Sofort sichtbar mit niedriger Opacity. WA_ShowWithoutActivating
-        # verhindert den Fokus-Klau beim initialen show().
+        # Initial unsichtbar. Overlay erscheint erst bei set_recording(True)
+        # und verschwindet wieder bei set_recording(False).
         self.setWindowOpacity(0.0)
-        self.show()
-
-        # macOS-native Tricks: NSWindow-Level auf Status-Level anheben und
-        # collectionBehavior so setzen, dass die Pille ueber ALLEN Apps und
-        # auf ALLEN Spaces sichtbar bleibt — unabhaengig davon, ob IQspeakr
-        # selbst gerade frontmost ist. Ohne das ist Qt.Tool auf Mac auf
-        # "nur sichtbar wenn App aktiv" beschraenkt (Wispr-Flow-Verhalten).
-        self._apply_macos_overlay_level()
+        self._nswin_configured = False
 
     def _apply_macos_overlay_level(self):
         try:
@@ -269,25 +262,12 @@ class PillOverlay(QWidget):
             log.warning(f"PillOverlay: primaryScreen() Fehler: {e}")
 
     def _tick(self):
-        # Opacity langsam auf Ziel faden (Active = 0.92, Idle = 0.22).
+        # Laeuft nur waehrend Aufnahme. Opacity auf Active-Level faden,
+        # Balken decay.
         diff = self._target_alpha - self._current_alpha
         if abs(diff) > 0.005:
             self._current_alpha += diff * 0.2
-
-        # Im Idle: leichtes Atmen (+/- 0.04) damit das Overlay "lebt".
-        if not self._active:
-            import math
-            self._idle_phase += 0.05
-            breath = 0.04 * math.sin(self._idle_phase)
-            effective_alpha = max(0.0, min(1.0, self._current_alpha + breath))
-        else:
-            effective_alpha = self._current_alpha
-
-        self.setWindowOpacity(effective_alpha)
-
-        # Balken abfallen lassen (Decay). Im Idle sind alle 0, im Active
-        # werden sie vom Audio-Callback via set_levels regelmaessig neu
-        # gefuellt.
+        self.setWindowOpacity(self._current_alpha)
         self._levels = [l * 0.90 for l in self._levels]
         self.update()
 
@@ -323,20 +303,28 @@ class PillOverlay(QWidget):
             self._levels = list(levels)
 
     def set_recording(self, on):
-        """Main-Thread-only. Switched zwischen Idle (dezent) und Aufnahme
-        (deutlich + Waveform). Overlay bleibt in beiden Zustaenden sichtbar,
-        nur die Opacity faded."""
+        """Main-Thread-only. Overlay nur waehrend Aufnahme sichtbar,
+        sonst versteckt. Kein Idle-Zustand mehr."""
         if not self.enabled:
             return
         self._active = bool(on)
         if on:
-            # Falls User inzwischen Monitor gewechselt hat, Pille
-            # neu positionieren.
             self._move_to_primary_screen()
+            self._current_alpha = 0.0
             self._target_alpha = self.ACTIVE_ALPHA
+            self.setWindowOpacity(0.0)
+            self.show()
+            if not self._nswin_configured:
+                # NSWindow-Level erst nach erstem show() setzen —
+                # vorher existiert das NSWindow noch nicht.
+                self._apply_macos_overlay_level()
+                self._nswin_configured = True
+            self._timer.start()
         else:
             self._levels = [0.0] * self.BAR_COUNT
-            self._target_alpha = self.IDLE_ALPHA
+            self._timer.stop()
+            self.setWindowOpacity(0.0)
+            self.hide()
 
 
 CLEANUP_PROMPT = """Du bereinigst gesprochene Sprache minimal-invasiv. WICHTIG: Du DARFST den Text NICHT umformulieren oder paraphrasieren. Der Sprecher soll seinen eigenen Stil wiedererkennen.
