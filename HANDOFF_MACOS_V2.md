@@ -1,8 +1,17 @@
-# Handoff: Windows → Mac (Rewrite `macos_v2/`)
+# Handoff: Windows → Mac (Rewrite `macos_v2/`) — ERLEDIGT 2026-04-24
 
-Übergabedokument von der Windows-Session an die macOS-Session.
-**Claude Code auf Mac: als erstes diese Datei komplett lesen**, dann mit dem User
-die unten markierten Design-Fragen kurz klären, dann loslegen.
+**Status: Port abgeschlossen.** `macos_v2/` angelegt mit app.py (1260 Zeilen, Syntax OK), requirements.txt, build_dmg.sh (PyInstaller + DMG), README.md. Noch ungetestet auf Mac — vor Distribution mindestens `python3 app.py` aus venv laufen lassen + Smoke-Test (Hotkey, Transkription, Single-Instance, Pill-Overlay).
+
+Design-Entscheidungen final:
+- STT: `openai-whisper` + MPS (Apple Silicon GPU)
+- Default-Hotkey: `ctrl+shift` (User-Wunsch, cross-platform konsistent zu Windows)
+- Labels: Unicode `⌘⇧⌥⌃`
+- Listener: `pynput`
+- Pill-Overlay: übernommen, `MARGIN_BOTTOM=40` (Qt's availableGeometry schließt Dock aus)
+
+---
+
+## Ursprüngliches Dokument (zur Referenz):
 
 ---
 
