@@ -1,13 +1,39 @@
-# Handoff: Windows → Mac (Rewrite `macos_v2/`) — ERLEDIGT 2026-04-24
+# Handoff: Windows → Mac (Rewrite `macos_v2/`) — ERLEDIGT + macOS 26 Fixes 2026-04-24 Abend
 
-**Status: Port abgeschlossen.** `macos_v2/` angelegt mit app.py (1260 Zeilen, Syntax OK), requirements.txt, build_dmg.sh (PyInstaller + DMG), README.md. Noch ungetestet auf Mac — vor Distribution mindestens `python3 app.py` aus venv laufen lassen + Smoke-Test (Hotkey, Transkription, Single-Instance, Pill-Overlay).
+**Status: Funktioniert auf macOS 26.4.** Port abgeschlossen + alle macOS-26-Kompatibilitätsprobleme gelöst. DMG-Installer baut (`./build_dmg.sh`, ~70 KB), App läuft mit Tray-Icon, Hotkey, Whisper-Transkription, Paste, Pill-Overlay, Modell-Wechsel.
 
-Design-Entscheidungen final:
-- STT: `openai-whisper` + MPS (Apple Silicon GPU)
-- Default-Hotkey: `ctrl+shift` (User-Wunsch, cross-platform konsistent zu Windows)
+## macOS 26.4+ spezifische Fallstricke (wichtig bei späteren Refactors)
+
+### 1. Qt `QSystemTrayIcon` rendert nicht mehr
+Qts Cocoa-Backend liefert `visible=True, icon_null=False`, aber macOS zeigt nichts. **Lösung: Subprocess-Pattern.** `tray_proc.py` ist ein eigener pyobjc-only Python-Prozess, der `NSStatusItem` hält. Kommunikation per JSON-Lines über stdin/stdout. Menü-Sync nach jedem `_build_menu()`. Details in `NativeStatusBar`-Klasse + `tray_proc.py`.
+
+### 2. pynput crasht im Listener-Thread (`TSMGetInputSourceProperty`)
+macOS 26 enforced `dispatch_assert_queue_fail` für Carbon/TSM-Calls (nur Main-Thread). pynput 1.8.1 ruft aus Listener-Thread → SIGTRAP. **Fix: Monkey-Patch** `pynput._util.darwin.keycode_context` UND `pynput.keyboard._darwin.keycode_context` — einmalig Main-Thread-Aufruf beim Import, dann gecachten Kontext yielden. Layout-Wechsel zur Laufzeit nicht unterstützt (egal für Hotkey-Workflow).
+
+### 3. PySide6 6.11 KeyboardModifier-Enum
+`int(QApplication.keyboardModifiers())` wirft TypeError. **Fix:** `.value` abfragen: `mods.value if hasattr(mods, "value") else int(mods)`.
+
+### 4. LSUIElement + Python-Dock-Icon
+Launcher muss `exec "$VENV/bin/python" "$APP/app.py"` sein (NICHT `nohup ... &`), sonst verliert Python den Bundle-Kontext und zeigt das Python-Blatt. `LSUIElement=true` im Info.plist genügt — **kein** `setActivationPolicy_(Accessory)` in Python-Code (kollidiert mit `QSystemTrayIcon`-Registrierung).
+
+### 5. Audio-Stream bei Modell-Wechsel
+`_load_model` öffnete bei jedem Wechsel einen zweiten `sd.InputStream` → leere Whisper-Transkripte durch Stream-Konkurrenz. **Fix:** `if self._persistent_stream is not None: return` am Anfang.
+
+### 6. Overlay-Verhalten
+Nur während Aufnahme sichtbar (`show()/hide()` in `set_recording`). NSWindow-Level-Konfiguration (`NSStatusWindowLevel` + `CanJoinAllSpaces`) erst nach erstem `show()`, sonst existiert das NSWindow noch nicht.
+
+## Architektur-Bausteine
+
+- `app.py` (~1650 Z.) — Hauptprozess: Qt, Hotkey, Whisper, Audio, Paste, Overlay
+- `tray_proc.py` — Subprocess: nur NSStatusItem + NSMenu (pyobjc, kein Qt)
+- `installer/gui/installer` — Bash-Installer: Python-Standalone + ffmpeg + venv + App-Bundle + TCC-Prompts
+- `build_dmg.sh` — Baut winziges DMG (~70 KB) mit Bash-Installer statt PyInstaller-Bundle (v1-Pattern)
+
+## Design-Entscheidungen (weiterhin gültig)
+- STT: `openai-whisper` (CPU default — MPS crasht in qkv_attention)
+- Default-Hotkey: `ctrl+shift`
 - Labels: Unicode `⌘⇧⌥⌃`
-- Listener: `pynput`
-- Pill-Overlay: übernommen, `MARGIN_BOTTOM=40` (Qt's availableGeometry schließt Dock aus)
+- Listener: `pynput` mit Monkey-Patch (siehe oben)
 
 ---
 
