@@ -1,6 +1,6 @@
 {
-  "hotkey": "ctrl",
-  "whisper_model": "small",
+  "hotkey": "ctrl+shift",
+  "whisper_model": "base",
   "ollama_model": "llama3.2",
   "cleanup_enabled": true,
   "language": "de",

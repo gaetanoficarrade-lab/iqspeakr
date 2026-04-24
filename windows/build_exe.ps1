@@ -16,20 +16,41 @@
 
 $ErrorActionPreference = 'Stop'
 
+# PowerShell 5.1 wandelt stderr-Output nativer Programme in ErrorRecords um,
+# was mit ErrorActionPreference='Stop' einen Abbruch ausloest - auch wenn der
+# Befehl Exit 0 liefert (z.B. pip "new version available" notice).
+# Dieser Wrapper schaltet fuer native Calls auf Continue und prueft nur den
+# echten Exit-Code.
+function Invoke-Native {
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$Args)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @Args
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Exe failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
 
 Write-Host "[1/4] Virtuelle Umgebung anlegen..." -ForegroundColor Cyan
 if (-Not (Test-Path ".venv")) {
-    python -m venv .venv
+    Invoke-Native "python" @("-m", "venv", ".venv")
 }
 $py = ".\.venv\Scripts\python.exe"
 $pip = ".\.venv\Scripts\pip.exe"
 
 Write-Host "[2/4] Dependencies installieren..." -ForegroundColor Cyan
-& $pip install --upgrade pip | Out-Null
-& $pip install -r requirements.txt
-& $pip install pyinstaller
+# pip kann sich unter Windows nicht via pip.exe upgraden (Binary locked) -
+# deshalb via "python -m pip".
+Invoke-Native $py @("-m", "pip", "install", "--upgrade", "pip")
+Invoke-Native $pip @("install", "-r", "requirements.txt")
+Invoke-Native $pip @("install", "pyinstaller")
 
 Write-Host "[3/4] Icon pruefen..." -ForegroundColor Cyan
 $IconArg = ""
@@ -79,7 +100,7 @@ $args = @(
 if ($IconArg) { $args += "--icon=icon.ico" }
 $args += "app.py"
 
-& ".\.venv\Scripts\pyinstaller.exe" @args
+Invoke-Native ".\.venv\Scripts\pyinstaller.exe" $args
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Green

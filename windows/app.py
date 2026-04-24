@@ -91,6 +91,7 @@ from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QWidget,
     QMessageBox, QInputDialog, QMainWindow,
+    QDialog, QLabel, QVBoxLayout, QDialogButtonBox,
 )
 from PySide6.QtGui import (
     QIcon, QPixmap, QAction, QActionGroup, QPainter, QColor,
@@ -253,13 +254,30 @@ _NAMED_KEYS = {
 }
 
 HOTKEY_DISPLAY = {
-    "ctrl": "Ctrl", "control": "Ctrl",
-    "shift": "Shift",
+    "ctrl": "Strg", "control": "Strg",
+    "shift": "Umschalt",
     "alt": "Alt", "option": "Alt",
     "cmd": "Win", "command": "Win", "win": "Win",
-    "space": "Space",
-    "enter": "Enter",
+    "space": "Leertaste",
+    "enter": "Eingabe",
     "tab": "Tab",
+}
+
+# Qt-Key -> interner Hotkey-String (fuer Custom-Hotkey-Recorder)
+_QT_MOD_TO_NAME = {
+    Qt.Key_Control: "ctrl",
+    Qt.Key_Shift:   "shift",
+    Qt.Key_Alt:     "alt",
+    Qt.Key_Meta:    "win",
+}
+_QT_NAMED_KEYS = {
+    Qt.Key_Space:  "space",
+    Qt.Key_Return: "enter",
+    Qt.Key_Enter:  "enter",
+    Qt.Key_Tab:    "tab",
+    Qt.Key_F1: "f1", Qt.Key_F2: "f2", Qt.Key_F3: "f3", Qt.Key_F4: "f4",
+    Qt.Key_F5: "f5", Qt.Key_F6: "f6", Qt.Key_F7: "f7", Qt.Key_F8: "f8",
+    Qt.Key_F9: "f9", Qt.Key_F10: "f10", Qt.Key_F11: "f11", Qt.Key_F12: "f12",
 }
 
 
@@ -299,6 +317,16 @@ def _hotkey_is_single_modifier(hotkey_str):
     return len(parts) == 1 and _is_modifier_name(parts[0])
 
 
+def _hotkey_is_all_modifiers(hotkey_str):
+    """True wenn die Kombi ausschliesslich aus Modifiern besteht (z.B. 'ctrl',
+    'ctrl+shift'). Nur dann sind Hold/Tap/Double-Tap sinnvoll - bei Kombis mit
+    Buchstaben oder F-Tasten gibt's naemlich keine klare 'lang gehalten'-Semantik."""
+    parts = [p.strip() for p in hotkey_str.lower().split("+") if p.strip()]
+    if not parts:
+        return False
+    return all(_is_modifier_name(p) for p in parts)
+
+
 def _whisper_model_cached(size):
     # faster-whisper laedt Modelle aus Huggingface-Cache (andere Struktur
     # als openai-whisper). Konservativ: True zurueckgeben, dann ueberspringt
@@ -309,8 +337,8 @@ def _whisper_model_cached(size):
 
 # --- Config ---
 DEFAULT_CONFIG = {
-    "hotkey": "ctrl",
-    "whisper_model": "small",
+    "hotkey": "ctrl+shift",
+    "whisper_model": "base",
     "ollama_model": "llama3.2",
     "cleanup_enabled": True,
     "language": "de",
@@ -353,6 +381,126 @@ def _make_icon_pixmap(state):
 
 
 # =====================================================================
+#  Hotkey-Recorder: Dialog, der Tastendruecke live aufnimmt.
+# =====================================================================
+
+class HotkeyRecorderDialog(QDialog):
+    """Modaler Dialog zum Aufnehmen einer Tastenkombination.
+
+    Der User druckt einfach die gewuenschte Kombi (z.B. Strg+Umschalt), laesst
+    los, der Dialog zeigt das Ergebnis und speichert es beim Klick auf
+    "Uebernehmen". Deutlich zuverlaessiger als eine Text-Eingabe (kein
+    Layout-/Rechtschreib-Problem, keine ungueltigen Namen)."""
+
+    _MOD_ORDER = ("ctrl", "alt", "shift", "win")
+
+    def __init__(self, parent=None, initial=""):
+        super().__init__(parent)
+        self.setWindowTitle("Eigene Tastenkombination")
+        self.setModal(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.resize(440, 190)
+
+        self._mods = set()
+        self._key = None
+        self._capture_complete = False
+        self._captured = (initial or "").strip().lower()
+
+        layout = QVBoxLayout(self)
+        info = QLabel(
+            "Druecke die gewuenschte Tastenkombination und lass sie los.\n"
+            "Dann auf „Uebernehmen“ klicken.\n\n"
+            "Erlaubt: Modifier (Strg, Umschalt, Alt, Win) + optional ein "
+            "Buchstabe, Leertaste, Eingabe, Tab oder F1-F12."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._display = QLabel()
+        font = self._display.font()
+        font.setPointSize(16)
+        font.setBold(True)
+        self._display.setFont(font)
+        self._display.setAlignment(Qt.AlignCenter)
+        self._display.setMinimumHeight(40)
+        layout.addWidget(self._display)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._ok_btn = buttons.button(QDialogButtonBox.Ok)
+        self._ok_btn.setText("Uebernehmen")
+        buttons.button(QDialogButtonBox.Cancel).setText("Abbrechen")
+        # Kein AutoDefault - sonst triggert Enter/Space den OK-Button statt
+        # als Taste erkannt zu werden.
+        for b in (self._ok_btn, buttons.button(QDialogButtonBox.Cancel)):
+            b.setAutoDefault(False)
+            b.setDefault(False)
+            b.setFocusPolicy(Qt.NoFocus)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._refresh_display()
+
+    def _build_combo_str(self):
+        parts = [m for m in self._MOD_ORDER if m in self._mods]
+        if self._key:
+            parts.append(self._key)
+        return "+".join(parts)
+
+    def _refresh_display(self):
+        live = self._build_combo_str()
+        shown = live or self._captured
+        if shown:
+            self._display.setText(hotkey_display(shown))
+        else:
+            self._display.setText("(druecke eine Taste)")
+        self._ok_btn.setEnabled(bool(self._captured))
+
+    def keyPressEvent(self, event):
+        if event.isAutoRepeat():
+            return
+        # Neuer Press nach einem fertigen Capture -> reset und neu aufnehmen
+        if self._capture_complete:
+            self._mods = set()
+            self._key = None
+            self._capture_complete = False
+
+        qt_key = event.key()
+        if qt_key in _QT_MOD_TO_NAME:
+            self._mods.add(_QT_MOD_TO_NAME[qt_key])
+        elif qt_key in _QT_NAMED_KEYS:
+            self._key = _QT_NAMED_KEYS[qt_key]
+        else:
+            t = (event.text() or "").lower()
+            if len(t) == 1 and t.isalnum():
+                self._key = t
+        self._refresh_display()
+        event.accept()
+
+    def keyReleaseEvent(self, event):
+        if event.isAutoRepeat():
+            return
+        qt_key = event.key()
+        m = int(QApplication.keyboardModifiers())
+        still_mod_down = bool(
+            m & int(Qt.ControlModifier) | m & int(Qt.ShiftModifier)
+            | m & int(Qt.AltModifier) | m & int(Qt.MetaModifier)
+        )
+        # Capture finalizen sobald a) ein Nicht-Modifier losgelassen wurde
+        # oder b) nach dem Loslassen keine Modifier mehr aktiv sind.
+        if (qt_key not in _QT_MOD_TO_NAME) or not still_mod_down:
+            combo = self._build_combo_str()
+            if combo:
+                self._captured = combo
+                self._capture_complete = True
+                self._refresh_display()
+        event.accept()
+
+    def result_combo(self):
+        return self._captured
+
+
+# =====================================================================
 #  Haupt-App: QObject mit Signals fuer thread-safe GUI-Updates.
 # =====================================================================
 
@@ -387,7 +535,7 @@ class IQspeakrApp(QObject):
         self.model = None
         self.hotkey_matchers = parse_hotkey(self.config["hotkey"])
         self.hotkey_label = hotkey_display(self.config["hotkey"])
-        self._single_modifier_mode = _hotkey_is_single_modifier(self.config["hotkey"])
+        self._modifier_only_mode = _hotkey_is_all_modifiers(self.config["hotkey"])
 
         self._ctrl_press_time = 0
         self._last_tap_time = 0
@@ -513,19 +661,29 @@ class IQspeakrApp(QObject):
         self._menu.addAction(quit_act)
 
     def _build_hotkey_submenu(self, sub):
-        hotkey_options = ["ctrl", "cmd", "alt", "shift"]
+        hotkey_options = ["ctrl+shift", "ctrl", "shift", "alt", "win"]
         group = QActionGroup(sub)
         group.setExclusive(True)
+        current = self.config.get("hotkey", "")
+        current_matched = False
         for opt in hotkey_options:
-            a = QAction(f"{hotkey_display(opt)} halten  ({opt})", sub)
+            a = QAction(f"{hotkey_display(opt)} halten", sub)
             a.setCheckable(True)
-            a.setChecked(self.config["hotkey"] == opt)
+            if current == opt:
+                a.setChecked(True)
+                current_matched = True
             a.triggered.connect(self._make_hotkey_callback(opt))
             group.addAction(a)
             sub.addAction(a)
         sub.addSeparator()
         custom = QAction("Eigene Kombination...", sub)
+        custom.setCheckable(True)
+        # Wenn der aktuelle Hotkey keine Preset-Option ist, zaehlt er als "custom".
+        if not current_matched and current:
+            custom.setChecked(True)
+            custom.setText(f"Eigene Kombination: {hotkey_display(current)}...")
         custom.triggered.connect(lambda _=False: self._custom_hotkey())
+        group.addAction(custom)
         sub.addAction(custom)
 
     def _build_whisper_submenu(self, sub):
@@ -593,7 +751,7 @@ class IQspeakrApp(QObject):
         self.config["hotkey"] = hotkey_str
         self.hotkey_matchers = parse_hotkey(hotkey_str)
         self.hotkey_label = hotkey_display(hotkey_str)
-        self._single_modifier_mode = _hotkey_is_single_modifier(hotkey_str)
+        self._modifier_only_mode = _hotkey_is_all_modifiers(hotkey_str)
         self._pressed_keys.clear()
         self._combo_active = False
         self._hold_mode = False
@@ -603,20 +761,10 @@ class IQspeakrApp(QObject):
         self._notify("IQspeakr", f"Neuer Hotkey: {self.hotkey_label} halten")
 
     def _custom_hotkey(self):
-        text, ok = QInputDialog.getText(
-            None, "Eigene Tastenkombination",
-            "Gib deine Kombination ein, z.B.:\n\n"
-            "  ctrl+space\n"
-            "  alt+shift+r\n"
-            "  ctrl+shift+space\n"
-            "  f8\n\n"
-            "Verfuegbare Tasten: ctrl, alt, shift, win,\n"
-            "space, enter, tab, f1-f12, oder ein Buchstabe (a-z)",
-            text=self.config["hotkey"],
-        )
-        if not ok:
+        dlg = HotkeyRecorderDialog(initial=self.config.get("hotkey", ""))
+        if dlg.exec() != QDialog.Accepted:
             return
-        hotkey_str = (text or "").strip().lower()
+        hotkey_str = dlg.result_combo()
         if not hotkey_str:
             return
         matchers = parse_hotkey(hotkey_str)
@@ -773,18 +921,32 @@ class IQspeakrApp(QObject):
             return matcher == key
         return key == matcher
 
+    def _key_belongs_to_hotkey(self, key):
+        """Prueft ob key zu IRGENDEINEM der Hotkey-Matcher gehoert -
+        sonst muellen wir _pressed_keys mit jeder Taste zu, die der User
+        tippt (Performance + Logik-Rauschen)."""
+        for matcher in self.hotkey_matchers:
+            if isinstance(matcher, set):
+                if key in matcher:
+                    return True
+            else:
+                if self._key_matches(key, matcher):
+                    return True
+        return False
+
     def _on_key_press(self, key):
         if self._suppress_listener:
             return
         try:
-            if self._single_modifier_mode:
-                matcher = self.hotkey_matchers[0]
-                if self._key_matches(key, matcher):
-                    if not self._hold_mode and (key not in self._pressed_keys):
-                        self._pressed_keys.add(key)
-                        self._handle_modifier_press()
-                    else:
-                        self._pressed_keys.add(key)
+            if self._modifier_only_mode:
+                if not self._key_belongs_to_hotkey(key):
+                    return
+                was_matched_before = self._combo_matches()
+                self._pressed_keys.add(key)
+                # Erst wenn ALLE Modifier der Kombi gedrueckt sind UND der
+                # Hold-Modus noch nicht aktiv ist -> Press triggern.
+                if not was_matched_before and self._combo_matches() and not self._hold_mode:
+                    self._handle_modifier_press()
                 return
             self._pressed_keys.add(key)
             if self._combo_matches() and not self._combo_active:
@@ -797,10 +959,15 @@ class IQspeakrApp(QObject):
         if self._suppress_listener:
             return
         try:
-            if self._single_modifier_mode:
-                matcher = self.hotkey_matchers[0]
-                if self._key_matches(key, matcher):
-                    self._pressed_keys.discard(key)
+            if self._modifier_only_mode:
+                if not self._key_belongs_to_hotkey(key):
+                    return
+                was_matched_before = self._combo_matches()
+                self._pressed_keys.discard(key)
+                # Sobald EINE der Kombi-Tasten losgelassen wurde, gilt die
+                # Kombi als "losgelassen" (Release-Handler entscheidet dann
+                # ueber Hold/Tap/Double-Tap).
+                if was_matched_before and not self._combo_matches() and self._hold_mode:
                     self._handle_modifier_release()
                 return
             self._pressed_keys.discard(key)
@@ -943,6 +1110,9 @@ class IQspeakrApp(QObject):
                     beam_size=1,           # statt 5: ~halb so lange, minimal weniger Qualitaet
                     vad_filter=True,       # ueberspringt Stille-Segmente
                     vad_parameters=dict(min_silence_duration_ms=300),
+                    # Kein Cross-Chunk-Kontext: marginal schneller und bei
+                    # typisch kurzen Dictate-Samples eh nicht relevant.
+                    condition_on_previous_text=False,
                 )
                 raw_text = "".join(seg.text for seg in segments).strip()
                 log.info(f"Whisper-Ergebnis: '{raw_text}' (Sprache: {info.language})")
@@ -971,7 +1141,10 @@ class IQspeakrApp(QObject):
         damit der die simulierten Keys nicht als Hotkey-Press missdeutet
         (Self-Trigger-Bug, der zu paralleler Pseudo-Aufnahme fuehrt)."""
         import time
-        time.sleep(0.3)
+        # Mini-Delay, damit das OS den Hotkey-Key-Up sauber verarbeitet hat
+        # bevor wir Ctrl+V simulieren. 50 ms sind spuerbar schneller als die
+        # frueheren 300 ms und reichen in der Praxis.
+        time.sleep(0.05)
         self._suppress_listener = True
         try:
             self._kb_controller.press(Key.ctrl)
