@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+# ============================================================
+#  IQspeakr v2 — GUI Installer für macOS (Homebrew-frei)
+#  Lädt Python-Standalone + ffmpeg direkt, keine Admin-Rechte.
+#
+#  Abweichungen zu v1:
+#   - Python 3.12 (wie v1, >=3.11 fuer openai-whisper)
+#   - Deps: PySide6 statt rumps, + pyperclip
+#   - App-Bundle mit LSUIElement=true (Menubar-Only)
+#   - Vor Install: pkill alte Instanzen + /tmp/iqspeakr.pid loeschen
+# ============================================================
+
+set -euo pipefail
+
+# --- Pfade ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES_DIR="$(cd "$SCRIPT_DIR/../Resources" && pwd)"
+INSTALL_DIR="$HOME/.iqspeakr"
+PYTHON_DIR="$INSTALL_DIR/python"
+BIN_DIR="$INSTALL_DIR/bin"
+VENV_PATH="$INSTALL_DIR/venv"
+APP_PATH="/Applications/IQspeakr.app"
+STATUS_FILE="/tmp/iqspeakr-install-status"
+LOG_FILE="/tmp/iqspeakr-install.log"
+
+# --- Architektur-Detection ---
+ARCH_RAW="$(uname -m)"
+if [ "$ARCH_RAW" = "arm64" ]; then
+    PY_ARCH="aarch64"
+else
+    PY_ARCH="x86_64"
+fi
+
+# --- Download-URLs (1:1 aus v1 uebernommen) ---
+PYTHON_TAG="20241016"
+PYTHON_VERSION="3.12.7"
+PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_TAG}/cpython-${PYTHON_VERSION}+${PYTHON_TAG}-${PY_ARCH}-apple-darwin-install_only.tar.gz"
+FFMPEG_URL="https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip"
+OLLAMA_URL="https://ollama.com/download/Ollama-darwin.zip"
+
+# --- Hilfsfunktionen ---
+update_status() {
+    printf '%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "${4:-}" > "$STATUS_FILE"
+}
+
+fail() {
+    printf 'ERROR\n%s\n' "$1" > "$STATUS_FILE"
+    osascript -e "display dialog \"$1\" with title \"IQspeakr Installer\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+    exit 1
+}
+
+log() {
+    echo "$(date '+%H:%M:%S') $1" >> "$LOG_FILE"
+}
+
+# --- Fortschrittsfenster starten ---
+echo "" > "$STATUS_FILE"
+echo "" > "$LOG_FILE"
+log "Installer v2 gestartet (Arch: $ARCH_RAW)"
+
+# Alte IQspeakr-Instanzen beenden (verhindert Mehrfach-Paste nach Re-Install)
+pkill -f "\.iqspeakr/venv/bin/python.*app\.py" 2>/dev/null || true
+rm -f /tmp/iqspeakr.pid
+log "Alte Instanzen beendet (falls vorhanden)"
+
+# Vollstaendige Neuinstallation: altes ~/.iqspeakr entfernen
+# (Python + venv + ffmpeg werden frisch geholt)
+if [ -d "$INSTALL_DIR" ]; then
+    log "Entferne altes $INSTALL_DIR..."
+    rm -rf "$INSTALL_DIR"
+fi
+
+osascript -l JavaScript "$RESOURCES_DIR/progress.js" "$STATUS_FILE" &
+PROGRESS_PID=$!
+sleep 0.5
+
+mkdir -p "$INSTALL_DIR" "$BIN_DIR"
+
+# ============================================================
+# 1. Python (Standalone-Build)
+# ============================================================
+update_status 5 "Lade Python..." "~40 MB, einmaliger Download" "Schritt 1 von 6"
+log "Prüfe Python..."
+
+if [ ! -x "$PYTHON_DIR/bin/python3" ]; then
+    log "Lade Python von $PYTHON_URL"
+    TMP_PY="/tmp/iqspeakr-python.tar.gz"
+    if ! curl -fL --progress-bar "$PYTHON_URL" -o "$TMP_PY" 2>>"$LOG_FILE"; then
+        fail "Python-Download fehlgeschlagen.\n\nPrüfe deine Internetverbindung.\nDetails: $LOG_FILE"
+    fi
+
+    update_status 15 "Entpacke Python..." "" "Schritt 1 von 6"
+    rm -rf "$PYTHON_DIR"
+    mkdir -p "$PYTHON_DIR"
+    if ! tar xzf "$TMP_PY" -C "$PYTHON_DIR" --strip-components=1 >> "$LOG_FILE" 2>&1; then
+        fail "Python-Archiv konnte nicht entpackt werden.\nDetails: $LOG_FILE"
+    fi
+    rm -f "$TMP_PY"
+fi
+
+PYTHON3="$PYTHON_DIR/bin/python3"
+log "Python OK: $($PYTHON3 --version 2>&1) @ $PYTHON3"
+
+# ============================================================
+# 2. ffmpeg (statisches Binary)
+# ============================================================
+update_status 20 "Lade ffmpeg..." "Wird für Spracherkennung benötigt" "Schritt 2 von 6"
+log "Prüfe ffmpeg..."
+
+if [ ! -x "$BIN_DIR/ffmpeg" ]; then
+    log "Lade ffmpeg von $FFMPEG_URL"
+    TMP_FFMPEG="/tmp/iqspeakr-ffmpeg.zip"
+    if ! curl -fL --progress-bar "$FFMPEG_URL" -o "$TMP_FFMPEG" 2>>"$LOG_FILE"; then
+        fail "ffmpeg-Download fehlgeschlagen.\n\nPrüfe deine Internetverbindung.\nDetails: $LOG_FILE"
+    fi
+
+    update_status 25 "Entpacke ffmpeg..." "" "Schritt 2 von 6"
+    if ! unzip -q -o "$TMP_FFMPEG" -d "$BIN_DIR" >> "$LOG_FILE" 2>&1; then
+        fail "ffmpeg-Archiv konnte nicht entpackt werden.\nDetails: $LOG_FILE"
+    fi
+    chmod +x "$BIN_DIR/ffmpeg" 2>/dev/null || true
+    rm -f "$TMP_FFMPEG"
+
+    # Quarantäne-Flag entfernen (sonst blockt Gatekeeper)
+    xattr -dr com.apple.quarantine "$BIN_DIR/ffmpeg" 2>/dev/null || true
+fi
+log "ffmpeg OK ($BIN_DIR/ffmpeg)"
+
+# ============================================================
+# 3. App-Dateien & venv
+# ============================================================
+update_status 35 "Installiere IQspeakr v2..." "Kopiere Dateien" "Schritt 3 von 6"
+log "Kopiere Dateien..."
+
+cp "$RESOURCES_DIR/app.py" "$INSTALL_DIR/"
+cp "$RESOURCES_DIR/tray_proc.py" "$INSTALL_DIR/"
+cp "$RESOURCES_DIR/requirements.txt" "$INSTALL_DIR/"
+
+# Icon mitinstallieren (fuer App-Bundle + eventuelle Tray-Faellbacks)
+if [ -f "$RESOURCES_DIR/IQspeakr.icns" ]; then
+    cp "$RESOURCES_DIR/IQspeakr.icns" "$INSTALL_DIR/"
+fi
+
+if [ ! -f "$INSTALL_DIR/config.json" ]; then
+    cp "$RESOURCES_DIR/config.json" "$INSTALL_DIR/"
+fi
+
+update_status 40 "Richte Python-Umgebung ein..." "Lädt Whisper, PySide6 & Abhängigkeiten (~2 GB, dauert einige Minuten)" "Schritt 3 von 6"
+log "Erstelle venv..."
+
+[ -d "$VENV_PATH" ] && rm -rf "$VENV_PATH"
+"$PYTHON3" -m venv "$VENV_PATH" >> "$LOG_FILE" 2>&1 || fail "Virtuelle Umgebung konnte nicht erstellt werden"
+
+"$VENV_PATH/bin/pip" install -q --upgrade pip >> "$LOG_FILE" 2>&1
+if ! "$VENV_PATH/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt" >> "$LOG_FILE" 2>&1; then
+    fail "Python-Pakete konnten nicht installiert werden.\n\nPrüfe deine Internetverbindung.\nDetails: $LOG_FILE"
+fi
+log "venv OK (PySide6 + openai-whisper + pynput + pyperclip + pyobjc)"
+
+# ============================================================
+# 4. App-Bundle
+# ============================================================
+update_status 75 "Erstelle App-Bundle..." "/Applications/IQspeakr.app" "Schritt 4 von 6"
+log "Erstelle App-Bundle..."
+
+rm -rf "$APP_PATH"
+mkdir -p "$APP_PATH/Contents/MacOS"
+mkdir -p "$APP_PATH/Contents/Resources"
+
+# Info.plist — LSUIElement=true: kein Dock-Icon, nur Menubar.
+# Kombiniert mit `exec` im Launcher (statt nohup &) bleibt der Python-Prozess
+# Teil des Bundle-Kontexts, d.h. LaunchServices sieht die App als laufend und
+# das Python-Blatt-Icon erscheint NICHT im Dock.
+cat > "$APP_PATH/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>IQspeakr</string>
+    <key>CFBundleDisplayName</key>
+    <string>IQspeakr</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.iqspeakr.app</string>
+    <key>CFBundleVersion</key>
+    <string>2.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0</string>
+    <key>CFBundleExecutable</key>
+    <string>IQspeakr</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSBackgroundOnly</key>
+    <false/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>IQspeakr benötigt Zugriff auf das Mikrofon für Sprache-zu-Text.</string>
+</dict>
+</plist>
+PLIST
+
+# Launcher — PATH zeigt auf IQspeakr-eigenes Bin-Verzeichnis (ffmpeg).
+# WICHTIG: `exec` (NICHT nohup &) damit Python den Bundle-Kontext erbt.
+# Nohup orphant den Prozess -> LaunchServices verliert Bundle-Identity
+# -> Dock zeigt Python-Blatt statt IQspeakr.icns, und `open` meldet "nicht offen".
+cat > "$APP_PATH/Contents/MacOS/IQspeakr" << LAUNCHER
+#!/usr/bin/env bash
+export PATH="$BIN_DIR:\$PATH"
+VENV_DIR="$VENV_PATH"
+APP_DIR="$INSTALL_DIR"
+
+if [ "\$1" = "--setup-permissions" ]; then
+    exec "\$VENV_DIR/bin/python" -c "
+from ApplicationServices import AXIsProcessTrustedWithOptions
+AXIsProcessTrustedWithOptions({'AXTrustedCheckOptionPrompt': True})
+import time; time.sleep(3)
+"
+else
+    exec "\$VENV_DIR/bin/python" "\$APP_DIR/app.py" >> "\$HOME/IQspeakr.log" 2>&1
+fi
+LAUNCHER
+chmod +x "$APP_PATH/Contents/MacOS/IQspeakr"
+
+# Icon
+if [ -f "$INSTALL_DIR/IQspeakr.icns" ]; then
+    cp "$INSTALL_DIR/IQspeakr.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
+fi
+
+# Bei Launch Services registrieren (für Spotlight)
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+"$LSREGISTER" -u "$APP_PATH" 2>/dev/null || true
+"$LSREGISTER" -f "$APP_PATH" 2>/dev/null || true
+mdimport "$APP_PATH" 2>/dev/null || true
+
+log "App-Bundle OK (LSUIElement=true)"
+
+# ============================================================
+# 5. Berechtigungen
+# ============================================================
+update_status 85 "Berechtigungen einrichten..." "Mikrofon-Zugriff" "Schritt 5 von 6"
+log "Frage Mikrofon-Berechtigung an..."
+
+"$VENV_PATH/bin/python" -c "
+import sounddevice as sd, time
+try:
+    s = sd.InputStream(samplerate=16000, channels=1, dtype='float32')
+    s.start(); time.sleep(0.5); s.stop(); s.close()
+except: pass
+" 2>/dev/null
+
+osascript -e 'display dialog "Bitte erlaube den Mikrofon-Zugriff im macOS-Dialog.\n\nDanach klicke hier auf '\''Weiter'\''." with title "IQspeakr — Mikrofon" buttons {"Weiter"} default button "Weiter" with icon note' 2>/dev/null
+log "Mikrofon angefragt"
+
+update_status 90 "Berechtigungen einrichten..." "Bedienungshilfen" "Schritt 5 von 6"
+log "Frage Bedienungshilfen-Berechtigung an..."
+
+open "$APP_PATH" --args --setup-permissions
+sleep 2
+
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
+osascript -e 'display dialog "Bitte aktiviere den Schalter neben '\''Python'\'' in den Bedienungshilfen.\n\nDie Systemeinstellungen sind bereits geöffnet.\n\nDanach klicke auf '\''Weiter'\''." with title "IQspeakr — Bedienungshilfen" buttons {"Weiter"} default button "Weiter" with icon note' 2>/dev/null
+
+TRUSTED=$("$VENV_PATH/bin/python" -c "
+from ApplicationServices import AXIsProcessTrusted
+print('yes' if AXIsProcessTrusted() else 'no')
+" 2>/dev/null)
+
+if [ "$TRUSTED" != "yes" ]; then
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    osascript -e 'display dialog "Die Berechtigung fehlt noch!\n\nBitte aktiviere den Schalter neben '\''Python'\'' und klicke dann auf '\''Weiter'\''." with title "IQspeakr — Berechtigung fehlt" buttons {"Weiter"} default button "Weiter" with icon caution' 2>/dev/null
+fi
+log "Bedienungshilfen: $TRUSTED"
+
+# ============================================================
+# 6. Ollama (optional — nur wenn vom Nutzer gewünscht)
+# ============================================================
+WANT_OLLAMA=$(osascript <<'OSA' 2>/dev/null || echo "skip"
+try
+    display dialog "Möchtest du Ollama installieren für die optionale KI-Textbereinigung?
+
+Ollama läuft lokal auf deinem Mac und putzt den transkribierten Text auf (Füllwörter, Grammatik).
+
+• Ja: ~200 MB Download, ~2 GB Sprachmodell
+• Nein: IQspeakr läuft auch ohne" with title "IQspeakr — KI-Textbereinigung" buttons {"Überspringen","Installieren"} default button "Überspringen" with icon note
+    if button returned of result is "Installieren" then
+        return "install"
+    else
+        return "skip"
+    end if
+on error
+    return "skip"
+end try
+OSA
+)
+
+if [ "$WANT_OLLAMA" = "install" ] && ! [ -d "/Applications/Ollama.app" ]; then
+    update_status 95 "Lade Ollama..." "~200 MB" "Schritt 6 von 6"
+    log "Lade Ollama von $OLLAMA_URL"
+    TMP_OLLAMA="/tmp/iqspeakr-ollama.zip"
+    if curl -fL --progress-bar "$OLLAMA_URL" -o "$TMP_OLLAMA" 2>>"$LOG_FILE"; then
+        unzip -q -o "$TMP_OLLAMA" -d /Applications/ >> "$LOG_FILE" 2>&1 || log "Ollama-Entpacken fehlgeschlagen"
+        rm -f "$TMP_OLLAMA"
+        xattr -dr com.apple.quarantine /Applications/Ollama.app 2>/dev/null || true
+        open -a Ollama 2>/dev/null || true
+        sleep 5
+        # Modell laden (im Hintergrund, blockt Installer nicht bei Fehler)
+        OLLAMA_BIN="/Applications/Ollama.app/Contents/Resources/ollama"
+        if [ -x "$OLLAMA_BIN" ]; then
+            update_status 97 "Lade Sprachmodell..." "llama3.2 (~2 GB)" "Schritt 6 von 6"
+            # v2 default laut config.json ist llama3.2 (nicht mistral wie v1)
+            "$OLLAMA_BIN" pull llama3.2 >> "$LOG_FILE" 2>&1 || log "Modell-Download fehlgeschlagen (kann später über Ollama nachgeholt werden)"
+        fi
+    else
+        log "Ollama-Download fehlgeschlagen — überspringe"
+    fi
+fi
+
+# ============================================================
+# Fertig
+# ============================================================
+update_status 100 "Installation abgeschlossen!" "IQspeakr ist bereit." ""
+
+printf 'DONE\n' > "$STATUS_FILE"
+sleep 1
+rm -f "$STATUS_FILE"
+kill "$PROGRESS_PID" 2>/dev/null || true
+
+LAUNCH_CHOICE=$(osascript <<'OSA' 2>/dev/null || echo "launch"
+try
+    display dialog "IQspeakr wurde erfolgreich installiert!
+
+• Ctrl+Shift gedrückt halten → Aufnahme
+• Loslassen → Text wird eingefügt
+
+Einstellungen über das Menüleisten-Icon." with title "IQspeakr ✓" buttons {"Später","Jetzt starten"} default button "Jetzt starten" with icon note
+    if button returned of result is "Jetzt starten" then
+        return "launch"
+    else
+        return "later"
+    end if
+on error
+    return "launch"
+end try
+OSA
+)
+
+if [ "$LAUNCH_CHOICE" = "launch" ]; then
+    log "Starte IQspeakr..."
+    # -n erzwingt frischen Launch (LaunchServices-Cache nach Install unzuverlaessig).
+    open -n "$APP_PATH" 2>>"$LOG_FILE" || log "open -n fehlgeschlagen"
+    sleep 1
+fi

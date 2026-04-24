@@ -94,6 +94,43 @@ import pyperclip
 from pynput import keyboard
 from pynput.keyboard import Key, KeyCode, Controller
 
+# =====================================================================
+#  macOS 26+ Fix: pynput ruft TSMGetInputSourceProperty aus seinem
+#  Listener-Thread auf (keycode_context() generator in pynput/_util/
+#  darwin.py:140). macOS 26 enforced main-thread-only fuer TSM/Carbon —
+#  Listener-Thread crasht mit dispatch_assert_queue_fail.
+#
+#  Fix: wir rufen keycode_context() genau einmal auf dem Main-Thread beim
+#  Import auf und cachen das Ergebnis. Dann monkey-patchen wir pynput,
+#  sodass der Listener-Thread die gecachte Version bekommt. Keyboard-
+#  Layout-Wechsel waehrend der Session werden dadurch ignoriert — fuer
+#  einen Single-Layout-Hotkey-Workflow egal.
+# =====================================================================
+import contextlib as _contextlib
+import pynput._util.darwin as _pynput_darwin
+import pynput.keyboard._darwin as _pynput_keyboard_darwin
+
+_cached_keycode_ctx = None
+try:
+    with _pynput_darwin.keycode_context() as _ctx:
+        _cached_keycode_ctx = _ctx
+except Exception:
+    # Falls Prewarm scheitert, lassen wir pynput im Originalzustand
+    # (crasht dann wie gewohnt — zumindest sehen wir den Fehler im Log).
+    pass
+
+
+@_contextlib.contextmanager
+def _cached_keycode_context():
+    yield _cached_keycode_ctx
+
+
+if _cached_keycode_ctx is not None:
+    _pynput_darwin.keycode_context = _cached_keycode_context
+    # pynput.keyboard._darwin hat keycode_context per "from ... import"
+    # gebunden — daher auch dort ersetzen.
+    _pynput_keyboard_darwin.keycode_context = _cached_keycode_context
+
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QWidget,
@@ -105,14 +142,9 @@ from PySide6.QtGui import (
     QGuiApplication,
 )
 
-# Dock-Icon unterdruecken (Menubar-Only-App). LSUIElement=YES im Info.plist
-# ist der saubere Build-Weg; diese Zur-Laufzeit-Variante ist ein Fallback
-# fuer Dev-Runs ohne App-Bundle. 1 == NSApplicationActivationPolicyAccessory.
-try:
-    from AppKit import NSApplication
-    NSApplication.sharedApplication().setActivationPolicy_(1)
-except Exception as _e:
-    log.warning(f"Dock-Icon konnte nicht unterdrueckt werden: {_e}")
+# Dock-Icon-Handling: LSUIElement=true im Info.plist ist die einzige zuverlaessige
+# Methode auf macOS 14+. setActivationPolicy_() via PyObjC zur Laufzeit kann mit
+# QSystemTrayIcon kollidieren (Icon erscheint nicht).
 
 # --- Pfade ---
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -143,14 +175,20 @@ class PillOverlay(QWidget):
     BAR_COUNT = 7
     W = 180
     H = 36
-    IDLE_ALPHA = 0.18
-    ACTIVE_ALPHA = 0.92
-    # Abstand zum unteren Bildschirmrand. Auf Mac liegt das Dock unten, also
-    # genug Puffer damit die Pill oberhalb schwebt. availableGeometry()
-    # respektiert Dock+Menubar schon — aber extra Luft schadet nicht.
-    MARGIN_BOTTOM = 40
+    # Overlay ist IMMER sichtbar. Im Idle dezent (niedrige Opacity),
+    # waehrend Aufnahme kraeftig. Der User wollte kein Auftauchen/
+    # Verschwinden-Blitz, sondern eine ruhige dauerhafte Anwesenheit.
+    IDLE_ALPHA = 0.22       # dezent, aber sichtbar
+    ACTIVE_ALPHA = 0.92     # deutlich, waehrend Aufnahme
+    # Abstand zum unteren Bildschirmrand. availableGeometry() respektiert
+    # Dock+Menubar — 16px darueber sind genug, sonst schwebt die Pille zu hoch.
+    MARGIN_BOTTOM = 16
 
     def __init__(self, enabled=True):
+        # Qt.Tool + WindowStaysOnTop + FramelessWindowHint ist die robuste
+        # Mac-Kombi fuer ein Overlay-Widget. WindowDoesNotAcceptFocus
+        # sorgt dafuer, dass das aktive Fenster des Users nicht deaktiviert
+        # wird wenn das Overlay erscheint.
         super().__init__(
             None,
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -158,8 +196,10 @@ class PillOverlay(QWidget):
         )
         self.enabled = enabled
         self._levels = [0.0] * self.BAR_COUNT
+        self._active = False
+        self._current_alpha = 0.0
         self._target_alpha = self.IDLE_ALPHA
-        self._current_alpha = self.IDLE_ALPHA
+        self._idle_phase = 0.0  # fuer das dezente Idle-Atmen
 
         if not enabled:
             log.info("PillOverlay: deaktiviert (config.overlay_enabled=false)")
@@ -169,27 +209,85 @@ class PillOverlay(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.resize(self.W, self.H)
-
-        # availableGeometry() auf Mac = Screen ohne Menubar UND Dock, also
-        # ist der untere Rand dieses Rects schon oberhalb vom Dock.
-        screen = QGuiApplication.primaryScreen().availableGeometry()
-        x = screen.x() + (screen.width() - self.W) // 2
-        y = screen.y() + screen.height() - self.H - self.MARGIN_BOTTOM
-        self.move(x, y)
+        self._move_to_primary_screen()
 
         self._timer = QTimer(self)
         self._timer.setInterval(40)  # ~25 fps
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
-        self.setWindowOpacity(self.IDLE_ALPHA)
+        # Sofort sichtbar mit niedriger Opacity. WA_ShowWithoutActivating
+        # verhindert den Fokus-Klau beim initialen show().
+        self.setWindowOpacity(0.0)
+        self.show()
+
+        # macOS-native Tricks: NSWindow-Level auf Status-Level anheben und
+        # collectionBehavior so setzen, dass die Pille ueber ALLEN Apps und
+        # auf ALLEN Spaces sichtbar bleibt — unabhaengig davon, ob IQspeakr
+        # selbst gerade frontmost ist. Ohne das ist Qt.Tool auf Mac auf
+        # "nur sichtbar wenn App aktiv" beschraenkt (Wispr-Flow-Verhalten).
+        self._apply_macos_overlay_level()
+
+    def _apply_macos_overlay_level(self):
+        try:
+            import objc
+            from AppKit import (
+                NSStatusWindowLevel,
+                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                NSWindowCollectionBehaviorStationary,
+                NSWindowCollectionBehaviorFullScreenAuxiliary,
+                NSWindowCollectionBehaviorIgnoresCycle,
+            )
+            # winId() liefert unter Qt/macOS einen Pointer auf das NSView.
+            # Via objc.objc_object(c_void_p=...) zurueck in ein Python-Objekt
+            # wandeln und .window() aufrufen.
+            view = objc.objc_object(c_void_p=int(self.winId()))
+            nswin = view.window()
+            if nswin is None:
+                log.warning("PillOverlay: NSWindow nicht gefunden")
+                return
+            nswin.setLevel_(NSStatusWindowLevel)
+            nswin.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+                | NSWindowCollectionBehaviorIgnoresCycle
+            )
+            # Nicht aktivieren beim Zeigen — vermeidet Fokus-Klau.
+            nswin.setHidesOnDeactivate_(False)
+            log.info("PillOverlay: NSWindow auf Status-Level (always-on-top)")
+        except Exception as e:
+            log.warning(f"PillOverlay: NSWindow-Level konnte nicht gesetzt werden: {e}")
+
+    def _move_to_primary_screen(self):
+        try:
+            screen = QGuiApplication.primaryScreen().availableGeometry()
+            x = screen.x() + (screen.width() - self.W) // 2
+            y = screen.y() + screen.height() - self.H - self.MARGIN_BOTTOM
+            self.move(x, y)
+        except Exception as e:
+            log.warning(f"PillOverlay: primaryScreen() Fehler: {e}")
 
     def _tick(self):
+        # Opacity langsam auf Ziel faden (Active = 0.92, Idle = 0.22).
         diff = self._target_alpha - self._current_alpha
         if abs(diff) > 0.005:
             self._current_alpha += diff * 0.2
-            self.setWindowOpacity(self._current_alpha)
-        # Decay damit Balken bei Stille ruhig abfallen.
+
+        # Im Idle: leichtes Atmen (+/- 0.04) damit das Overlay "lebt".
+        if not self._active:
+            import math
+            self._idle_phase += 0.05
+            breath = 0.04 * math.sin(self._idle_phase)
+            effective_alpha = max(0.0, min(1.0, self._current_alpha + breath))
+        else:
+            effective_alpha = self._current_alpha
+
+        self.setWindowOpacity(effective_alpha)
+
+        # Balken abfallen lassen (Decay). Im Idle sind alle 0, im Active
+        # werden sie vom Audio-Callback via set_levels regelmaessig neu
+        # gefuellt.
         self._levels = [l * 0.90 for l in self._levels]
         self.update()
 
@@ -225,11 +323,20 @@ class PillOverlay(QWidget):
             self._levels = list(levels)
 
     def set_recording(self, on):
+        """Main-Thread-only. Switched zwischen Idle (dezent) und Aufnahme
+        (deutlich + Waveform). Overlay bleibt in beiden Zustaenden sichtbar,
+        nur die Opacity faded."""
         if not self.enabled:
             return
-        self._target_alpha = self.ACTIVE_ALPHA if on else self.IDLE_ALPHA
-        if not on:
+        self._active = bool(on)
+        if on:
+            # Falls User inzwischen Monitor gewechselt hat, Pille
+            # neu positionieren.
+            self._move_to_primary_screen()
+            self._target_alpha = self.ACTIVE_ALPHA
+        else:
             self._levels = [0.0] * self.BAR_COUNT
+            self._target_alpha = self.IDLE_ALPHA
 
 
 CLEANUP_PROMPT = """Du bereinigst gesprochene Sprache minimal-invasiv. WICHTIG: Du DARFST den Text NICHT umformulieren oder paraphrasieren. Der Sprecher soll seinen eigenen Stil wiedererkennen.
@@ -395,23 +502,250 @@ def save_config(config):
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
-# --- Tray-Icon-Helfer (Qt-Painter statt PIL) ---
+# --- Tray-Icon-Helfer (Qt rendert Emoji als PNG statt Plain-Kreis) ---
+
+# Mikrofon/Rec/Busy-Emoji aus der System-Emoji-Font in ein PNG rendern.
+# Grund: die alte Mac-Version zeigte 🎤 als Menubar-Title; QSystemTrayIcon
+# braucht aber ein Bild, kein Text. Qt kann Emojis ueber QFont rendern —
+# sieht in der Menubar fast identisch aus zu rumps' Text-Title.
+from PySide6.QtGui import QFont
+from PySide6.QtCore import QRectF
+
+_ICON_EMOJIS = {
+    "ready": "🎤",
+    "rec":   "🔴",
+    "busy":  "⏳",
+}
+
+
+# =====================================================================
+#  NativeStatusBar — Ersatz fuer QSystemTrayIcon.
+#
+#  Qts QSystemTrayIcon-Cocoa-Backend rendert auf macOS 26 das Icon nicht
+#  zuverlaessig (Qt meldet visible=True, trotzdem bleibt die Menubar
+#  leer). Wir umgehen Qt komplett und bauen direkt auf NSStatusBar +
+#  NSStatusItem + NSMenu — derselbe Mechanismus den rumps in v1 nutzt
+#  und der sicher funktioniert.
+#
+#  Menue-Klicks werden an die bestehenden QAction-Objekte (aus _build_menu)
+#  weitergereicht; das Gros der Qt-Struktur bleibt erhalten.
+# =====================================================================
+_NATIVE_ICON_TITLES = {"ready": "🎤", "rec": "🔴", "busy": "⏳"}
+
+
+try:
+    from Foundation import NSObject
+    import objc as _objc
+
+    class _NativeMenuTarget(NSObject):
+        """NSObject-Target fuer NSMenuItem-Klicks. Ruft ein Python-
+        Callable auf. MUSS NSObject sein, sonst akzeptiert AppKit es
+        nicht als target."""
+        def initWithCallback_(self, cb):
+            self = _objc.super(_NativeMenuTarget, self).init()
+            if self is None:
+                return None
+            self._cb = cb
+            return self
+
+        def clicked_(self, sender):
+            try:
+                self._cb()
+            except Exception as e:
+                log.exception(f"NativeMenu-Callback fehlgeschlagen: {e}")
+        clicked_ = _objc.selector(clicked_, signature=b"v@:@")
+except Exception:
+    _NativeMenuTarget = None
+
+
+# Modul-globale Strong-Reference zum Status-Item. pyobjc-Objekte in
+# Hybrid-Event-Loops (Qt + CFRunLoop) werden manchmal zu frueh released,
+# selbst mit instance-attribute-ref — diese global haelt sie bombenfest.
+_GLOBAL_TRAY_REF = None
+
+
+class NativeStatusBar(QObject):
+    """QSystemTrayIcon-Ersatz via Subprocess.
+
+    Qt-hostetes NSStatusItem rendert auf macOS 26 das Menubar-Icon nicht
+    (Isoliert-Test funktioniert, Qt-Variante nicht — Qts NSApplication
+    blockt den Registrierungspfad). Wir spawnen daher einen reinen
+    pyobjc-Kind-Prozess der NUR das Tray hostet. Kommunikation per
+    JSON-Lines ueber stdin/stdout.
+
+    Menu-Klicks kommen ueber stdout zurueck und werden via Qt-Signal im
+    Main-Thread auf die jeweilige QAction.trigger() gerouted."""
+
+    click_signal = Signal(str)  # action_id string
+
+    def __init__(self, tray_script_path, python_exec):
+        super().__init__()
+        import subprocess
+        self._qmenu = None
+        self._id_to_action = {}
+        self._proc = subprocess.Popen(
+            [python_exec, "-u", tray_script_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        log.info(f"NativeStatusBar: Tray-Subprocess gestartet (PID {self._proc.pid})")
+
+        # Stdout-Reader-Thread: wandelt JSON-Lines in Qt-Signals um
+        self._reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self._reader.start()
+
+        # Menu-Klick-Signal -> QAction-Dispatch (im Main-Thread)
+        self.click_signal.connect(self._on_click)
+
+    def _read_stdout(self):
+        try:
+            for line in self._proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except Exception:
+                    continue
+                if "click" in msg:
+                    self.click_signal.emit(str(msg["click"]))
+                elif "ready" in msg:
+                    log.info("NativeStatusBar: Tray meldet sich bereit")
+        except Exception as e:
+            log.warning(f"NativeStatusBar: stdout-reader beendet: {e}")
+
+    def _on_click(self, action_id):
+        action = self._id_to_action.get(action_id)
+        if action is None:
+            log.warning(f"Tray-Click unbekannte Action: {action_id}")
+            return
+        try:
+            action.trigger()
+        except Exception as e:
+            log.exception(f"QAction.trigger fehlgeschlagen: {e}")
+
+    def _send(self, obj):
+        try:
+            self._proc.stdin.write(json.dumps(obj) + "\n")
+            self._proc.stdin.flush()
+        except Exception as e:
+            log.warning(f"NativeStatusBar: send fehlgeschlagen: {e}")
+
+    def update_state(self, state):
+        self._send({"cmd": "title",
+                    "value": _NATIVE_ICON_TITLES.get(state, _NATIVE_ICON_TITLES["ready"])})
+
+    def setToolTip(self, text):
+        self._send({"cmd": "tooltip", "value": str(text)})
+
+    def build_menu_from_qmenu(self, qmenu):
+        self._qmenu = qmenu
+        self._id_to_action = {}
+        items = self._walk_qmenu(qmenu)
+        self._send({"cmd": "menu", "items": items})
+
+    def _walk_qmenu(self, qmenu):
+        out = []
+        for action in qmenu.actions():
+            if action.isSeparator():
+                out.append({"sep": True})
+                continue
+            submenu = action.menu()
+            if submenu is not None:
+                out.append({
+                    "title": action.text().replace("&", ""),
+                    "submenu": self._walk_qmenu(submenu),
+                })
+                continue
+            aid = f"a{id(action)}"
+            self._id_to_action[aid] = action
+            entry = {
+                "title": action.text().replace("&", ""),
+                "id": aid,
+                "enabled": action.isEnabled(),
+            }
+            if action.isCheckable():
+                entry["checked"] = action.isChecked()
+            out.append(entry)
+        return out
+
+    def hide(self):
+        self._send({"cmd": "quit"})
+        try:
+            self._proc.wait(timeout=2)
+        except Exception:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    def showMessage(self, title, message, *args, **kwargs):
+        log.info(f"[Notify] {title}: {message}")
+
 
 def _make_icon_pixmap(state):
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    color = {
-        "ready": QColor(80, 80, 80),
-        "rec":   QColor(220, 40, 40),
-        "busy":  QColor(230, 140, 30),
-    }.get(state, QColor(80, 80, 80))
-    p.setBrush(color)
-    p.setPen(QColor(0, 0, 0))
-    p.drawEllipse(6, 6, 52, 52)
-    p.end()
-    return pm
+    """Rendert das Mikrofon-Emoji (🎤) via native macOS NSImage+NSString.
+    Qts QPainter+QFont rendert "Apple Color Emoji" auf Python-Standalone
+    nur lueckenhaft (~3% der Pixel); die native AppKit-Text-Pipeline
+    funktioniert dagegen zuverlaessig — das ist der gleiche Weg, den
+    v1 (rumps) via NSStatusItem.title genutzt hat.
+    Bei rec/busy overlayen wir einen farbigen Status-Punkt, damit man
+    die Aufnahme sieht."""
+    emoji = _ICON_EMOJIS.get(state, "🎤")
+    try:
+        from AppKit import (
+            NSImage, NSFont, NSColor, NSBezierPath,
+            NSForegroundColorAttributeName, NSFontAttributeName,
+        )
+        from Foundation import NSMakeSize, NSMakePoint, NSMakeRect, NSString
+
+        # 22pt logisch — macOS-Menubar-Standardhoehe. NSImage bekommt
+        # automatisch HiDPI-Representation vom Framework.
+        logical = 22.0
+        img = NSImage.alloc().initWithSize_(NSMakeSize(logical, logical))
+        img.lockFocus()
+
+        font = NSFont.fontWithName_size_("Apple Color Emoji", 16)
+        attrs = {NSFontAttributeName: font}
+        ns_emoji = NSString.stringWithString_(emoji)
+        ns_emoji.drawAtPoint_withAttributes_(NSMakePoint(3.0, 1.0), attrs)
+
+        # Aufnahme-/Busy-Status: kleiner Punkt oben rechts
+        if state == "rec":
+            NSColor.colorWithRed_green_blue_alpha_(0.86, 0.20, 0.20, 1.0).set()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(logical - 8, logical - 8, 7, 7)
+            ).fill()
+        elif state == "busy":
+            NSColor.colorWithRed_green_blue_alpha_(0.95, 0.65, 0.15, 1.0).set()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(logical - 8, logical - 8, 7, 7)
+            ).fill()
+
+        img.unlockFocus()
+
+        tiff = img.TIFFRepresentation()
+        data = bytes(tiff)
+        pm = QPixmap()
+        pm.loadFromData(data)
+        return pm
+    except Exception as e:
+        log.warning(f"NSImage-Icon-Rendering fehlgeschlagen: {e}")
+        # Fallback: schlichtes graues Quadrat, damit ueberhaupt WAS da ist
+        size = 44
+        pm = QPixmap(size, size)
+        pm.setDevicePixelRatio(2.0)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor(40, 40, 40, 240))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(8, 8, size - 16, size - 16))
+        p.end()
+        return pm
 
 
 # =====================================================================
@@ -515,10 +849,13 @@ class HotkeyRecorderDialog(QDialog):
         if event.isAutoRepeat():
             return
         qt_key = event.key()
-        m = int(QApplication.keyboardModifiers())
+        # PySide6 6.11+ gibt KeyboardModifier-Enum zurueck, nicht mehr int-kompatibel.
+        # .value liefert den darunterliegenden int.
+        mods = QApplication.keyboardModifiers()
+        m = int(mods.value) if hasattr(mods, "value") else int(mods)
         still_mod_down = bool(
-            m & int(Qt.ControlModifier) | m & int(Qt.ShiftModifier)
-            | m & int(Qt.AltModifier) | m & int(Qt.MetaModifier)
+            m & int(Qt.ControlModifier.value) | m & int(Qt.ShiftModifier.value)
+            | m & int(Qt.AltModifier.value) | m & int(Qt.MetaModifier.value)
         )
         # Capture finalizen sobald a) ein Nicht-Modifier losgelassen wurde
         # oder b) nach dem Loslassen keine Modifier mehr aktiv sind.
@@ -546,11 +883,24 @@ class IQspeakrApp(QObject):
     rebuild_menu_sig = Signal()
     notify_sig = Signal(str, str)
     status_sig = Signal(str)
+    # Overlay-Show/Hide MUSS ueber Signal laufen, nicht direkt. Qt-Widgets
+    # duerfen nur vom Main-Thread erstellt/sichtbar gemacht werden — aus
+    # dem pynput-Listener-Callback (CGEventTap-Thread) direkt aufgerufen
+    # crasht das mit SIGABRT in NSWindow-Init.
+    overlay_recording_sig = Signal(bool)
 
     def __init__(self, qapp):
         super().__init__()
+        log.info("=" * 60)
+        log.info(f"IQspeakr startet (PID {os.getpid()}, frozen={getattr(sys, 'frozen', False)})")
         self.qapp = qapp
         self.config = load_config()
+        log.info(
+            f"Config: hotkey={self.config.get('hotkey')!r}, "
+            f"whisper={self.config.get('whisper_model')!r}, "
+            f"lang={self.config.get('language')!r}, "
+            f"overlay={self.config.get('overlay_enabled')}"
+        )
         self.recording = False
         self.audio_frames = []
         # Persistenter Audio-Stream: einmal geoeffnet, lebt bis zum Quit.
@@ -563,10 +913,11 @@ class IQspeakrApp(QObject):
         # sieht pynput die simulierten Keys als Hotkey-Press (Self-Trigger).
         self._suppress_listener = False
 
-        # Pill-Overlay (QWidget) - im Main-Thread erzeugt, thread-safe via Signals.
+        # Pill-Overlay (QWidget) - im Main-Thread erzeugt, thread-safe via
+        # Signals. KEIN show() hier - Overlay zeigt sich erst bei
+        # set_recording(True), sonst haengt es permanent transparent am
+        # unteren Bildschirmrand (User-Verwirrung).
         self.overlay = PillOverlay(enabled=self.config.get("overlay_enabled", True))
-        if self.overlay.enabled:
-            self.overlay.show()
 
         self.model = None
         self.hotkey_matchers = parse_hotkey(self.config["hotkey"])
@@ -590,20 +941,38 @@ class IQspeakrApp(QObject):
 
         self._status_text = "Modell wird geladen..."
 
-        # Tray-Icon (Menubar auf Mac)
-        self.tray = QSystemTrayIcon()
-        self.tray.setIcon(QIcon(_make_icon_pixmap("ready")))
-        self.tray.setToolTip("IQspeakr")
+        # Tray-Icon ueber natives NSStatusItem (wie v1/rumps).
+        # WICHTIG: Creation muss NACH dem Start der Qt-Event-Loop laufen,
+        # sonst ueberschreibt Qts NSApplication-Init den Status-Item-
+        # Registrierungspfad auf macOS 26 (Icon wird nie gerendert).
+        self.tray = None  # placeholder; wird in _init_native_tray befuellt
         self._menu = QMenu()
         self._build_menu()
-        self.tray.setContextMenu(self._menu)
-        self.tray.show()
+        # singleShot(0) = erster Tick nach qapp.exec() startet
+        QTimer.singleShot(0, self._init_native_tray)
+        log.info("Native-Tray-Init deferred auf Event-Loop-Start")
+
+    def _init_native_tray(self):
+        global _GLOBAL_TRAY_REF
+        try:
+            tray_script = os.path.join(APP_DIR, "tray_proc.py")
+            if not os.path.exists(tray_script):
+                log.error(f"tray_proc.py nicht gefunden: {tray_script}")
+                return
+            self.tray = NativeStatusBar(tray_script, sys.executable)
+            self.tray.setToolTip("IQspeakr")
+            self.tray.build_menu_from_qmenu(self._menu)
+            _GLOBAL_TRAY_REF = self.tray
+            log.info("NativeStatusBar (Subprocess) erzeugt — 🎤 jetzt in der Menubar")
+        except Exception as e:
+            log.exception(f"NativeStatusBar-Init fehlgeschlagen: {e}")
 
         # Signals -> Slots (automatisch queued wenn emitted aus anderem Thread).
         self.icon_state_sig.connect(self._on_icon_state)
         self.rebuild_menu_sig.connect(self._build_menu)
         self.notify_sig.connect(self._on_notify)
         self.status_sig.connect(self._on_status)
+        self.overlay_recording_sig.connect(self.overlay.set_recording)
 
         # Whisper-Modell laden (Thread)
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -611,27 +980,91 @@ class IQspeakrApp(QObject):
         # Global Hotkey-Listener (pynput). Benoetigt Bedienungshilfen-
         # Berechtigung auf macOS (Systemeinstellungen -> Datenschutz ->
         # Bedienungshilfen). Beim ersten Start kommt ein System-Prompt.
-        self._listener = keyboard.Listener(
-            on_press=self._on_key_press,
-            on_release=self._on_key_release,
+        # Ohne Permission schmeisst pynput intern (im Listener-Thread) —
+        # deshalb brauchen wir einen Watchdog, der den Listener-Zustand
+        # kurz nach dem Start prueft.
+        self._listener = None
+        self._start_hotkey_listener()
+        # Watchdog: nach 1.5s pruefen, ob der Listener-Thread noch laeuft.
+        # pynput stirbt bei fehlender Accessibility-Permission ggf. leise
+        # (Objective-C Exception im Hintergrund-Thread).
+        QTimer.singleShot(1500, self._check_listener_health)
+
+    def _start_hotkey_listener(self):
+        try:
+            self._listener = keyboard.Listener(
+                on_press=self._on_key_press,
+                on_release=self._on_key_release,
+            )
+            # daemon MUSS vor start() gesetzt werden.
+            self._listener.daemon = True
+            self._listener.start()
+            log.info("pynput Keyboard-Listener gestartet")
+        except Exception as e:
+            # Typisch auf Mac bei fehlender Accessibility-Permission:
+            # OSError oder ImportError aus Quartz. Wir loggen, zeigen
+            # dem User eine klare Fehlermeldung und oeffnen den
+            # System-Einstellungen-Dialog.
+            log.exception(f"Hotkey-Listener konnte nicht starten: {e}")
+            self._set_status("Hotkey deaktiviert (Accessibility?)")
+            QTimer.singleShot(500, self._show_accessibility_hint)
+
+    def _check_listener_health(self):
+        """Prueft ob der pynput-Listener wirklich laeuft. pynput startet zwar
+        den Thread, der Event-Tap kann aber trotzdem stillschweigend fehlen,
+        wenn macOS die Accessibility-Permission nicht erteilt hat."""
+        try:
+            running = bool(self._listener and self._listener.running)
+            alive = bool(self._listener and self._listener.is_alive())
+        except Exception:
+            running, alive = False, False
+        if not (running and alive):
+            log.warning(
+                f"Listener-Watchdog: running={running} alive={alive} -> "
+                "vermutlich fehlt die Bedienungshilfen-Berechtigung."
+            )
+            self._set_status("Hotkey deaktiviert (Accessibility?)")
+            self._show_accessibility_hint()
+        else:
+            log.info("Listener-Watchdog: Hotkey-Erkennung laeuft sauber.")
+
+    def _show_accessibility_hint(self):
+        """Einmalige Hinweisdialog + Oeffnen der System-Einstellungen.
+        Wird nur bei fehlender Accessibility-Permission aufgerufen."""
+        if getattr(self, "_accessibility_hint_shown", False):
+            return
+        self._accessibility_hint_shown = True
+        self._notify(
+            "IQspeakr - Bedienungshilfen noetig",
+            "Bitte IQspeakr in Systemeinstellungen > Datenschutz "
+            "> Bedienungshilfen aktivieren, dann App neu starten.",
         )
-        self._listener.daemon = True
-        self._listener.start()
-        log.info("pynput Keyboard-Listener aktiv - Hotkey-Erkennung laeuft")
+        # System-Einstellungen direkt auf den richtigen Pane oeffnen.
+        try:
+            subprocess.Popen([
+                "open",
+                "x-apple.systempreferences:com.apple.preference.security"
+                "?Privacy_Accessibility",
+            ])
+        except Exception as e:
+            log.warning(f"System-Einstellungen konnten nicht geoeffnet werden: {e}")
 
     # --- Slots (laufen immer im Main-Thread) ---
 
     def _on_icon_state(self, state):
+        if self.tray is None:
+            return  # Tray wird deferred initialisiert — Zustand holt sich der
+                    # naechste Aufruf nach Init.
         try:
-            self.tray.setIcon(QIcon(_make_icon_pixmap(state)))
+            self.tray.update_state(state)
         except Exception as e:
             log.warning(f"Icon-Update fehlgeschlagen: {e}")
 
     def _on_notify(self, title, message):
-        try:
-            self.tray.showMessage(title, message, QSystemTrayIcon.Information, 4000)
-        except Exception as e:
-            log.warning(f"Notification fehlgeschlagen: {e}")
+        if self.tray is None:
+            log.info(f"[Notify pre-tray] {title}: {message}")
+            return
+        self.tray.showMessage(title, message)
 
     def _on_status(self, text):
         self._status_text = text
@@ -697,6 +1130,14 @@ class IQspeakrApp(QObject):
         quit_act = QAction("Beenden", self._menu)
         quit_act.triggered.connect(lambda _=False: self._quit())
         self._menu.addAction(quit_act)
+
+        # Subprocess-Tray synchron halten (Haken bei Hotkey/Sprache/Modell
+        # werden nur gesetzt wenn wir das Menu neu an den Tray schicken).
+        if self.tray is not None:
+            try:
+                self.tray.build_menu_from_qmenu(self._menu)
+            except Exception as e:
+                log.warning(f"Tray-Menu-Sync fehlgeschlagen: {e}")
 
     def _build_hotkey_submenu(self, sub):
         # Mac-typische Modifier-Presets. "cmd" ersetzt "win" aus der
@@ -861,7 +1302,8 @@ class IQspeakrApp(QObject):
 
     def _quit(self):
         try:
-            self._listener.stop()
+            if self._listener is not None:
+                self._listener.stop()
         except Exception:
             pass
         # CoreAudio-Deadlock-Regel: stop()/close() auf sd.InputStream darf
@@ -874,7 +1316,8 @@ class IQspeakrApp(QObject):
             threading.Thread(
                 target=self._close_stream_async, args=(stream,), daemon=True,
             ).start()
-        self.tray.hide()
+        if self.tray is not None:
+            self.tray.hide()
         self.qapp.quit()
 
     def _close_stream_async(self, stream):
@@ -889,11 +1332,13 @@ class IQspeakrApp(QObject):
     def _load_model(self):
         try:
             size = self.config["whisper_model"]
-            # MPS (Apple-GPU) automatisch picken wenn verfuegbar, sonst CPU.
-            # Neuere openai-whisper-Versionen wuerden das auch selbst machen
-            # wenn man device weglaesst, aber explizit ist sicherer.
+            # Device-Auswahl: Default CPU (stabil). MPS gibt's zwar auf
+            # Apple Silicon und ist 3-5x schneller, crasht aber bei
+            # openai-whisper in der qkv_attention-Schicht (Fatal Python
+            # error: Aborted). Opt-in moeglich via config.json
+            # "use_mps": true — wer es testen will kann das setzen.
             device = "cpu"
-            if _HAS_TORCH:
+            if self.config.get("use_mps") and _HAS_TORCH:
                 try:
                     if torch.backends.mps.is_available():
                         device = "mps"
@@ -909,6 +1354,14 @@ class IQspeakrApp(QObject):
             return
 
         # Persistenten Audio-Stream oeffnen - bleibt bis zum Quit aktiv.
+        # WICHTIG: Nur EINMAL oeffnen. Bei Modell-Wechsel wird _load_model
+        # erneut gestartet — der bestehende Stream darf dann nicht ueber-
+        # schrieben werden, sonst entstehen zwei konkurrierende Streams
+        # die das Mikrofon teilen (Whisper liefert dann leere Strings).
+        if self._persistent_stream is not None:
+            log.info("Audio-Stream laeuft bereits - ueberspringe Re-Init")
+            self._set_status("Bereit")
+            return
         try:
             self._persistent_stream = sd.InputStream(
                 samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -917,7 +1370,22 @@ class IQspeakrApp(QObject):
             self._persistent_stream.start()
             log.info("Persistenter Audio-Stream gestartet")
         except Exception as e:
-            log.error(f"Audio-Stream-Init-Fehler: {e}")
+            log.exception(f"Audio-Stream-Init-Fehler: {e}")
+            self._set_status("Mikrofon-Fehler (Permission?)")
+            self._notify(
+                "IQspeakr - Mikrofon noetig",
+                "Mikrofon-Zugriff fehlt oder kein Mikro gefunden. "
+                "Systemeinstellungen > Datenschutz > Mikrofon pruefen, "
+                "dann App neu starten.",
+            )
+            try:
+                subprocess.Popen([
+                    "open",
+                    "x-apple.systempreferences:com.apple.preference.security"
+                    "?Privacy_Microphone",
+                ])
+            except Exception:
+                pass
         self.ollama_available = self._check_ollama()
         if not self.ollama_available:
             self.cleanup_enabled = False
@@ -1115,7 +1583,7 @@ class IQspeakrApp(QObject):
         self.audio_frames = []
         self._set_icon_state("ready")
         self._refresh_menu()
-        self.overlay.set_recording(False)
+        self.overlay_recording_sig.emit(False)
         log.debug("Aufnahme abgebrochen (zu kurzer Tap)")
 
     def toggle_recording(self, _sender):
@@ -1135,14 +1603,14 @@ class IQspeakrApp(QObject):
         self.recording = True  # ab jetzt sammelt der Audio-Callback Frames
         self._set_icon_state("rec")
         self._refresh_menu()
-        self.overlay.set_recording(True)
+        self.overlay_recording_sig.emit(True)
 
     def _stop_recording(self):
         self.recording = False  # Audio-Callback hoert sofort auf zu sammeln
         self._set_icon_state("busy")
         log.info(f"Aufnahme gestoppt, {len(self.audio_frames)} Frames aufgenommen")
         self._refresh_menu()
-        self.overlay.set_recording(False)
+        self.overlay_recording_sig.emit(False)
 
         frames = self.audio_frames
         self.audio_frames = []
@@ -1241,18 +1709,33 @@ def main():
     import multiprocessing
     multiprocessing.freeze_support()
 
+    log.info(f"main() start - Python {sys.version.split()[0]}")
+
     qapp = QApplication(sys.argv)
     # Verhindert dass das Schliessen des (unsichtbaren) Overlay-Fensters
     # die gesamte App beendet.
     qapp.setQuitOnLastWindowClosed(False)
+    # Kein _hide_dock_icon()-Aufruf mehr: LSUIElement=true im Info.plist
+    # erledigt das bereits. Ein zusaetzliches setActivationPolicy(Accessory)
+    # zu frueh verhindert auf macOS 14+ sporadisch das Anzeigen des
+    # QSystemTrayIcon (Menubar-Icon "fehlt").
 
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        log.error("System-Tray nicht verfuegbar - App kann nicht laufen.")
-        QMessageBox.critical(None, "IQspeakr",
-                             "Das Menubar-Icon ist nicht verfuegbar.")
+    # Systemtray-Check entfallen: wir nutzen NSStatusBar direkt und nicht
+    # mehr QSystemTrayIcon. NSStatusBar.systemStatusBar() ist immer da.
+
+    try:
+        app = IQspeakrApp(qapp)
+    except Exception:
+        log.exception("FATAL: IQspeakrApp-Init gescheitert")
+        QMessageBox.critical(
+            None, "IQspeakr",
+            "App konnte nicht starten. Siehe ~/IQspeakr.log.",
+        )
         sys.exit(1)
 
-    app = IQspeakrApp(qapp)
+    log.info("Qt Event-Loop uebernimmt (qapp.exec)...")
+    # Referenz auf `app` am Leben halten, sonst GC's Qt-Tray-Icon weg.
+    qapp._iqspeakr_app = app
     sys.exit(qapp.exec())
 
 

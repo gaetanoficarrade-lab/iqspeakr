@@ -1,91 +1,108 @@
 #!/usr/bin/env bash
 # ============================================================
-#  IQspeakr macOS v2 — Build Script
-#  Baut .app via PyInstaller, setzt LSUIElement + packt in DMG
+#  IQspeakr v2 — DMG Builder
+#  Erstellt "IQspeakr Installer.app" und verpackt es in eine DMG
+#
+#  Pattern identisch zu v1 (macos/build_dmg.sh):
+#  Kleiner Bash-Installer statt PyInstaller-Bundle.
+#  Python-Deps werden erst beim Install via pip nachgeladen.
 # ============================================================
-#
-# Voraussetzungen:
-#   - Python 3.11+ (Apple-Silicon nativ fuer MPS-Support)
-#   - Homebrew + ffmpeg (`brew install ffmpeg`)
-#   - Internet fuer pip + Whisper-Modell-Download beim ersten Start
-#
-# Ausfuehren (im macos_v2-Ordner):
-#   ./build_dmg.sh
-#
-# Ergebnis:
-#   dist/IQspeakr.app        — fertige App
-#   IQspeakr-v2.dmg          — verteilbares DMG
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$PROJECT_DIR"
+INSTALLER_SRC="$PROJECT_DIR/installer"
+BUILD_DIR="$PROJECT_DIR/build"
+DMG_CONTENT="$BUILD_DIR/dmg-content"
+INSTALLER_APP="$DMG_CONTENT/IQspeakr Installer.app"
+DMG_OUTPUT="$PROJECT_DIR/IQspeakr-v2-Installer.dmg"
 
-echo "[1/5] Virtuelle Umgebung anlegen..."
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
+echo "▸ Erstelle IQspeakr v2 Installer..."
+
+# Aufräumen
+rm -rf "$BUILD_DIR"
+mkdir -p "$DMG_CONTENT"
+
+# ============================================================
+# Installer.app Bundle erstellen
+# ============================================================
+mkdir -p "$INSTALLER_APP/Contents/MacOS"
+mkdir -p "$INSTALLER_APP/Contents/Resources"
+
+# Info.plist
+cat > "$INSTALLER_APP/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>IQspeakr Installer</string>
+    <key>CFBundleDisplayName</key>
+    <string>IQspeakr Installer</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.iqspeakr.installer</string>
+    <key>CFBundleVersion</key>
+    <string>2.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0</string>
+    <key>CFBundleExecutable</key>
+    <string>installer</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+    </array>
+</dict>
+</plist>
+PLIST
+
+# Executable
+cp "$INSTALLER_SRC/gui/installer" "$INSTALLER_APP/Contents/MacOS/installer"
+chmod +x "$INSTALLER_APP/Contents/MacOS/installer"
+
+# Resources: Fortschrittsfenster
+cp "$INSTALLER_SRC/gui/progress.js" "$INSTALLER_APP/Contents/Resources/"
+
+# Resources: v2-App-Dateien (werden bei Installation nach ~/.iqspeakr kopiert)
+# Abweichung zu v1: Quellen liegen direkt im macos_v2/-Root, nicht in installer/
+cp "$PROJECT_DIR/app.py" "$INSTALLER_APP/Contents/Resources/"
+cp "$PROJECT_DIR/tray_proc.py" "$INSTALLER_APP/Contents/Resources/"
+cp "$PROJECT_DIR/config.json" "$INSTALLER_APP/Contents/Resources/"
+cp "$PROJECT_DIR/requirements.txt" "$INSTALLER_APP/Contents/Resources/"
+
+# Icon: v2 liefert IQspeakr.icns mit — wird sowohl fuer Installer als auch
+# fuer die spaeter installierte App verwendet.
+if [ -f "$PROJECT_DIR/IQspeakr.icns" ]; then
+    cp "$PROJECT_DIR/IQspeakr.icns" "$INSTALLER_APP/Contents/Resources/AppIcon.icns"
+    cp "$PROJECT_DIR/IQspeakr.icns" "$INSTALLER_APP/Contents/Resources/IQspeakr.icns"
 fi
-source .venv/bin/activate
 
-echo "[2/5] Dependencies installieren..."
-pip install --upgrade pip --quiet
-pip install --quiet -r requirements.txt
-pip install --quiet pyinstaller
+echo "  ✓ IQspeakr Installer.app erstellt"
 
-echo "[3/5] PyInstaller: .app bauen..."
-rm -rf dist build
-pyinstaller \
-    --name IQspeakr \
-    --windowed \
-    --onedir \
-    --noconfirm \
-    --clean \
-    --osx-bundle-identifier com.iqspeakr.app \
-    --icon IQspeakr.icns \
-    --collect-all whisper \
-    --collect-submodules pynput \
-    --collect-submodules sounddevice \
-    --exclude-module tkinter \
-    --add-data "config.json:." \
-    app.py
+# ============================================================
+# DMG erstellen
+# ============================================================
+echo "▸ Erstelle DMG..."
 
-APP_BUNDLE="dist/IQspeakr.app"
-PLIST="$APP_BUNDLE/Contents/Info.plist"
-
-echo "[4/5] Info.plist patchen (LSUIElement + Mikro-Permission)..."
-# LSUIElement=YES → kein Dock-Icon, nur Menuebalken-Icon
-/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
-    || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
-
-# Mikrofon-Berechtigungs-Prompt-Text fuer macOS
-/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'IQspeakr braucht Zugriff auf das Mikrofon fuer Sprache-zu-Text.'" "$PLIST" 2>/dev/null \
-    || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'IQspeakr braucht Zugriff auf das Mikrofon fuer Sprache-zu-Text.'" "$PLIST"
-
-echo "[5/5] DMG packen..."
-DMG_OUTPUT="$PROJECT_DIR/IQspeakr-v2.dmg"
 rm -f "$DMG_OUTPUT"
-DMG_STAGE="$(mktemp -d)/IQspeakr"
-mkdir -p "$DMG_STAGE"
-cp -R "$APP_BUNDLE" "$DMG_STAGE/"
-ln -s /Applications "$DMG_STAGE/Applications"
 
 hdiutil create \
-    -volname "IQspeakr v2" \
-    -srcfolder "$DMG_STAGE" \
+    -volname "IQspeakr v2 Installer" \
+    -srcfolder "$DMG_CONTENT" \
     -ov \
     -format UDZO \
-    "$DMG_OUTPUT" > /dev/null
+    "$DMG_OUTPUT"
 
-rm -rf "$DMG_STAGE"
+echo "  ✓ DMG erstellt: $DMG_OUTPUT"
+
+rm -rf "$BUILD_DIR"
 
 echo ""
-echo "============================================"
-echo "  IQspeakr.app + DMG sind bereit:"
-echo "  $APP_BUNDLE"
-echo "  $DMG_OUTPUT"
-echo "============================================"
-echo ""
-echo "Hinweis: Beim ersten Start muss die App in"
-echo "  Systemeinstellungen → Datenschutz & Sicherheit"
-echo "  → Bedienungshilfen + Input Monitoring + Mikrofon"
-echo "freigegeben werden."
+echo "╔══════════════════════════════════════════════╗"
+echo "║  IQspeakr-v2-Installer.dmg ist bereit!       ║"
+echo "║                                              ║"
+echo "║  Pfad: $DMG_OUTPUT"
+echo "╚══════════════════════════════════════════════╝"
