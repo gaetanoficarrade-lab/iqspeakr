@@ -30,3 +30,6 @@ dist/
 *.swo
 
 .claude/
+
+# Compiled launcher binary (built by build_dmg.sh into build/)
+macos_v2/launcher

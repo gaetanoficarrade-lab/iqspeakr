@@ -978,6 +978,16 @@ class IQspeakrApp(QObject):
         # (Objective-C Exception im Hintergrund-Thread).
         QTimer.singleShot(1500, self._check_listener_health)
 
+        # Hintergrund-Polling: prueft alle 3s, ob TCC inzwischen granted ist.
+        # Damit muss der User nach dem Schalter-Aktivieren NICHT zwingend
+        # "Hab ich gemacht" klicken — App merkt's automatisch und startet
+        # den Listener neu.
+        self._tcc_was_granted = False  # initial state
+        self._tcc_poll_timer = QTimer(self)
+        self._tcc_poll_timer.setInterval(3000)
+        self._tcc_poll_timer.timeout.connect(self._poll_accessibility_status)
+        self._tcc_poll_timer.start()
+
     def _start_hotkey_listener(self):
         try:
             self._listener = keyboard.Listener(
@@ -998,44 +1008,195 @@ class IQspeakrApp(QObject):
             QTimer.singleShot(500, self._show_accessibility_hint)
 
     def _check_listener_health(self):
-        """Prueft ob der pynput-Listener wirklich laeuft. pynput startet zwar
-        den Thread, der Event-Tap kann aber trotzdem stillschweigend fehlen,
-        wenn macOS die Accessibility-Permission nicht erteilt hat."""
+        """Prueft ob der pynput-Listener Events kriegt. pynput nutzt auf macOS
+        CGEventTap — das braucht *Eingabeueberwachung* (Input Monitoring),
+        NICHT Bedienungshilfen. Wir checken die korrekte TCC-Permission via
+        CGPreflightListenEventAccess (CoreGraphics Public API)."""
         try:
             running = bool(self._listener and self._listener.running)
             alive = bool(self._listener and self._listener.is_alive())
         except Exception:
             running, alive = False, False
-        if not (running and alive):
+
+        # Input Monitoring (Eingabeueberwachung) — das ist was CGEventTap braucht
+        input_monitoring_ok = True
+        try:
+            from Quartz import CGPreflightListenEventAccess
+            input_monitoring_ok = bool(CGPreflightListenEventAccess())
+        except Exception as e:
+            log.warning(f"CGPreflightListenEventAccess nicht abrufbar: {e}")
+
+        if not (running and alive and input_monitoring_ok):
             log.warning(
-                f"Listener-Watchdog: running={running} alive={alive} -> "
-                "vermutlich fehlt die Bedienungshilfen-Berechtigung."
+                f"Listener-Watchdog: running={running} alive={alive} "
+                f"input_monitoring={input_monitoring_ok} -> "
+                "Eingabeueberwachung-Berechtigung fehlt."
             )
-            self._set_status("Hotkey deaktiviert (Accessibility?)")
+            self._set_status("Hotkey deaktiviert (Eingabeueberwachung?)")
             self._show_accessibility_hint()
         else:
             log.info("Listener-Watchdog: Hotkey-Erkennung laeuft sauber.")
 
-    def _show_accessibility_hint(self):
-        """Einmalige Hinweisdialog + Oeffnen der System-Einstellungen.
-        Wird nur bei fehlender Accessibility-Permission aufgerufen."""
-        if getattr(self, "_accessibility_hint_shown", False):
+    def _show_accessibility_hint(self, manual_trigger=False):
+        """Schritt-fuer-Schritt-Wizard fuer Eingabeueberwachung
+        (Input Monitoring) — das ist was pynput's CGEventTap auf macOS
+        braucht. Oeffnet ausschliesslich den Eingabeueberwachung-Tab
+        (kein Finder mehr), zeigt klare Anleitung."""
+        if getattr(self, "_accessibility_hint_shown", False) and not manual_trigger:
             return
         self._accessibility_hint_shown = True
-        self._notify(
-            "IQspeakr - Bedienungshilfen noetig",
-            "Bitte IQspeakr in Systemeinstellungen > Datenschutz "
-            "> Bedienungshilfen aktivieren, dann App neu starten.",
-        )
-        # System-Einstellungen direkt auf den richtigen Pane oeffnen.
+
+        # WICHTIG: Privacy_ListenEvent = Eingabeueberwachung,
+        # NICHT Privacy_Accessibility = Bedienungshilfen. pynput braucht
+        # ersteres fuer globale Hotkeys via CGEventTap.
         try:
             subprocess.Popen([
                 "open",
                 "x-apple.systempreferences:com.apple.preference.security"
-                "?Privacy_Accessibility",
+                "?Privacy_ListenEvent",
             ])
         except Exception as e:
             log.warning(f"System-Einstellungen konnten nicht geoeffnet werden: {e}")
+
+        box = QMessageBox()
+        box.setWindowTitle("IQspeakr - Eingabeueberwachung aktivieren")
+        box.setIcon(QMessageBox.Information)
+        box.setText(
+            "IQspeakr braucht ZWEI Berechtigungen, beide unter\n"
+            "Datenschutz & Sicherheit:"
+        )
+        box.setInformativeText(
+            "1. EINGABEUEBERWACHUNG (fuer den globalen Hotkey)\n"
+            "    Tab oeffnet sich gleich automatisch.\n"
+            "    -> '+' Knopf -> Programme -> IQspeakr -> Oeffnen\n"
+            "    -> Schalter neben IQspeakr EIN.\n\n"
+            "2. BEDIENUNGSHILFEN (fuer Auto-Paste mit Cmd+V)\n"
+            "    Im selben Settings-Fenster: links auf 'Bedienungshilfen' klicken.\n"
+            "    -> dasselbe noch mal: '+' -> IQspeakr -> EIN.\n\n"
+            "Mit TouchID/Passwort jeweils bestaetigen.\n\n"
+            "Dieses Fenster kannst du offen lassen — IQspeakr erkennt\n"
+            "automatisch, sobald beide Schalter aktiv sind."
+        )
+        ok_btn = box.addButton("Hab ich gemacht", QMessageBox.AcceptRole)
+        later_btn = box.addButton("Spaeter", QMessageBox.RejectRole)
+        box.setDefaultButton(ok_btn)
+        box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
+        box.exec()
+
+        if box.clickedButton() is ok_btn:
+            log.info("User bestaetigt Bedienungshilfen - starte Listener neu")
+            try:
+                if self._listener:
+                    self._listener.stop()
+            except Exception:
+                pass
+            self._start_hotkey_listener()
+            QTimer.singleShot(1500, self._check_listener_health_after_grant)
+        else:
+            # User klickt 'Spaeter' — Wizard nicht erneut zeigen in dieser
+            # Session. Re-Trigger geht ueber Tray-Menue.
+            log.info("User verschiebt Bedienungshilfen-Setup")
+            self._set_status("Bedienungshilfen fehlen - via Tray-Menue erneut einrichten")
+
+    def _check_listener_health_after_grant(self):
+        """Wird nach 'Hab ich gemacht' aufgerufen. Prueft Eingabeueberwachung
+        (NICHT Bedienungshilfen). Wenn nicht erteilt: Notification, kein
+        erneuter Wizard (kein Endlos-Loop)."""
+        try:
+            from Quartz import CGPreflightListenEventAccess
+            trusted = bool(CGPreflightListenEventAccess())
+        except Exception:
+            trusted = False
+
+        if trusted:
+            log.info("Eingabeueberwachung erteilt - Hotkey laeuft jetzt")
+            self._set_status("")
+            self._notify(
+                "IQspeakr",
+                "Eingabeueberwachung aktiv - Hotkey funktioniert jetzt.",
+            )
+        else:
+            log.warning("Trotz 'Hab ich gemacht': TCC sagt noch nicht trusted")
+            self._set_status("Eingabeueberwachung fehlt - via Tray-Menue erneut einrichten")
+            self._notify(
+                "Eingabeueberwachung fehlt",
+                "Klicke aufs Tray-Icon und waehle 'Eingabeueberwachung einrichten' "
+                "fuer die Anleitung.",
+            )
+
+    def _trigger_accessibility_setup_manually(self):
+        """Wird vom Tray-Menue aufgerufen, damit der User den Wizard
+        jederzeit erneut starten kann (ohne App-Neustart)."""
+        self._accessibility_hint_shown = False
+        self._show_accessibility_hint(manual_trigger=True)
+
+    def _poll_accessibility_status(self):
+        """Wird alle 3s aufgerufen. Erkennt automatisch wenn eine der beiden
+        Permissions erteilt wird:
+          - Eingabeueberwachung (CGPreflightListenEventAccess) -> Hotkey
+          - Bedienungshilfen (AXIsProcessTrusted)               -> Cmd+V
+        Listener wird neu gestartet, User per Notification informiert."""
+        try:
+            from Quartz import CGPreflightListenEventAccess
+            from ApplicationServices import AXIsProcessTrusted
+            input_now = bool(CGPreflightListenEventAccess())
+            access_now = bool(AXIsProcessTrusted())
+        except Exception:
+            return
+
+        # State-Tracking — initial sync auf erstem Lauf
+        if not hasattr(self, "_access_was_granted"):
+            self._access_was_granted = access_now
+
+        # Eingabeueberwachung wurde gerade erteilt -> Listener neu starten
+        if input_now and not self._tcc_was_granted:
+            log.info("Auto-Polling: Eingabeueberwachung wurde gerade erteilt!")
+            self._tcc_was_granted = True
+            try:
+                if self._listener:
+                    self._listener.stop()
+            except Exception:
+                pass
+            self._start_hotkey_listener()
+            self._set_status("")
+            if access_now:
+                self._notify(
+                    "IQspeakr",
+                    "Beide Berechtigungen aktiv - Hotkey + Auto-Paste funktionieren!",
+                )
+            else:
+                self._notify(
+                    "IQspeakr - Hotkey aktiv",
+                    "Fuer Auto-Paste fehlt noch 'Bedienungshilfen'. "
+                    "Im selben Settings-Fenster aktivieren.",
+                )
+        elif input_now:
+            self._tcc_was_granted = True
+
+        # Bedienungshilfen wurde gerade erteilt -> Auto-Paste funktioniert
+        if access_now and not self._access_was_granted:
+            log.info("Auto-Polling: Bedienungshilfen wurde gerade erteilt!")
+            self._access_was_granted = True
+            if input_now:
+                self._notify(
+                    "IQspeakr",
+                    "Beide Berechtigungen aktiv - Hotkey + Auto-Paste funktionieren!",
+                )
+            else:
+                self._notify(
+                    "IQspeakr - Auto-Paste aktiv",
+                    "Fuer Hotkey fehlt noch 'Eingabeueberwachung'. "
+                    "Im selben Settings-Fenster aktivieren.",
+                )
+
+        # Wechsel von True nach False = Permission entzogen
+        if self._tcc_was_granted and not input_now:
+            log.warning("Auto-Polling: Eingabeueberwachung wurde entzogen")
+            self._tcc_was_granted = False
+            self._set_status("Eingabeueberwachung fehlt")
+        if self._access_was_granted and not access_now:
+            log.warning("Auto-Polling: Bedienungshilfen wurde entzogen")
+            self._access_was_granted = False
 
     # --- Slots (laufen immer im Main-Thread) ---
 
@@ -1113,6 +1274,11 @@ class IQspeakrApp(QObject):
         cfg_act = QAction("Konfig-Datei oeffnen", self._menu)
         cfg_act.triggered.connect(lambda _=False: self.open_config(None))
         self._menu.addAction(cfg_act)
+
+        # Eingabeueberwachung-Wizard manuell triggern
+        access_act = QAction("Eingabeueberwachung einrichten", self._menu)
+        access_act.triggered.connect(lambda _=False: self._trigger_accessibility_setup_manually())
+        self._menu.addAction(access_act)
 
         self._menu.addSeparator()
         quit_act = QAction("Beenden", self._menu)

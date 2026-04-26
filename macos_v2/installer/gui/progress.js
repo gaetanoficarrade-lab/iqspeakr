@@ -75,8 +75,32 @@ function run(argv) {
             if (!raw) return;
             const lines = raw.js.trim().split('\n');
 
-            // Zeile 1: Prozent (0-100) oder DONE/ERROR
+            // Zeile 1: Prozent (0-100) oder DONE/ERROR/BACKGROUND/FOREGROUND
             const first = lines[0] || '';
+            // BACKGROUND: Fenster nicht mehr floating, in untere rechte Ecke,
+            // damit System-Dialoge (TCC) sichtbar sind.
+            if (first === 'BACKGROUND') {
+                win.setLevel($.NSNormalWindowLevel);
+                const screenFrame = $.NSScreen.mainScreen.visibleFrame;
+                const x = screenFrame.origin.x + screenFrame.size.width - 510;
+                const y = screenFrame.origin.y + 30;
+                win.setFrameDisplay($.NSMakeRect(x, y, 480, 160), true);
+                if (lines.length >= 2) titleLabel.setStringValue($(lines[1]));
+                if (lines.length >= 3) detailLabel.setStringValue($(lines[2]));
+                if (lines.length >= 4) stepLabel.setStringValue($(lines[3]));
+                return;
+            }
+            // FOREGROUND: zurueck floating + zentriert
+            if (first === 'FOREGROUND') {
+                win.setLevel($.NSFloatingWindowLevel);
+                win.center;
+                win.makeKeyAndOrderFront(null);
+                app.activateIgnoringOtherApps(true);
+                if (lines.length >= 2) titleLabel.setStringValue($(lines[1]));
+                if (lines.length >= 3) detailLabel.setStringValue($(lines[2]));
+                if (lines.length >= 4) stepLabel.setStringValue($(lines[3]));
+                return;
+            }
             if (first === 'DONE') {
                 timer.invalidate();
                 progress.setDoubleValue(100);

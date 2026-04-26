@@ -19,8 +19,9 @@ DMG_OUTPUT="$PROJECT_DIR/IQspeakr-v2-Installer.dmg"
 
 echo "▸ Erstelle IQspeakr v2 Installer..."
 
-# Aufräumen
-rm -rf "$BUILD_DIR"
+# Aufräumen — aber Caches (ffmpeg, snapshot) NICHT loeschen, sonst muessen
+# wir bei jedem Build 2 GB neu tar'en und 50 MB ffmpeg neu downloaden.
+rm -rf "$DMG_CONTENT"
 mkdir -p "$DMG_CONTENT"
 
 # ============================================================
@@ -73,6 +74,23 @@ cp "$PROJECT_DIR/tray_proc.py" "$INSTALLER_APP/Contents/Resources/"
 cp "$PROJECT_DIR/config.json" "$INSTALLER_APP/Contents/Resources/"
 cp "$PROJECT_DIR/requirements.txt" "$INSTALLER_APP/Contents/Resources/"
 
+# ffmpeg + venv-Pakete werden zur Install-Zeit downloaded (V1-Pattern).
+# Das haelt das DMG klein (<1 MB) und macht Updates einfach — der Installer
+# zieht aktuelle Versionen.
+
+# C-Launcher kompilieren (echtes Mach-O-Binary statt Bash-Wrapper).
+# Mach-O ist Pflicht, damit macOS Tahoe TCC die App-Identitaet stabil
+# auf das Bundle (com.iqspeakr.app) mappt. Bash-Skripte als Bundle-
+# Hauptbinary fuehren bei Tahoe zu Identity-Mapping auf den exec'd
+# Python-Subprocess — und damit zu unzuverlaessigen TCC-Permissions.
+LAUNCHER_BIN="$PROJECT_DIR/build/launcher"
+mkdir -p "$PROJECT_DIR/build"
+echo "  ▸ Kompiliere C-Launcher (arm64)..."
+clang -O2 -arch arm64 -o "$LAUNCHER_BIN" "$PROJECT_DIR/launcher.c"
+cp "$LAUNCHER_BIN" "$INSTALLER_APP/Contents/Resources/launcher"
+chmod +x "$INSTALLER_APP/Contents/Resources/launcher"
+echo "  ✓ Launcher kompiliert + ins DMG kopiert ($(file "$INSTALLER_APP/Contents/Resources/launcher" | awk -F: '{print $2}'))"
+
 # Icon: v2 liefert IQspeakr.icns mit — wird sowohl fuer Installer als auch
 # fuer die spaeter installierte App verwendet.
 if [ -f "$PROJECT_DIR/IQspeakr.icns" ]; then
@@ -98,7 +116,9 @@ hdiutil create \
 
 echo "  ✓ DMG erstellt: $DMG_OUTPUT"
 
-rm -rf "$BUILD_DIR"
+# Nur dmg-content aufraeumen — ffmpeg-cache und snapshot bleiben fuer
+# schnelle Re-Builds (sonst muessen wir bei jedem Build 2 GB neu tar'en)
+rm -rf "$DMG_CONTENT"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
