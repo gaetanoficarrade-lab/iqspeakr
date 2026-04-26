@@ -1,6 +1,32 @@
 # Handoff: Windows → Mac (Rewrite `macos_v2/`) — ERLEDIGT + macOS 26 Fixes 2026-04-24 Abend
 
-**Status: Funktioniert auf macOS 26.4.** Port abgeschlossen + alle macOS-26-Kompatibilitätsprobleme gelöst. DMG-Installer baut (`./build_dmg.sh`, ~70 KB), App läuft mit Tray-Icon, Hotkey, Whisper-Transkription, Paste, Pill-Overlay, Modell-Wechsel.
+**Status: Funktioniert auf macOS 26.4.** Port abgeschlossen + alle macOS-26-Kompatibilitätsprobleme gelöst. DMG-Installer baut (`./build_dmg.sh`, ~80 KB), App läuft mit Tray-Icon, Hotkey, Whisper-Transkription, Paste, Pill-Overlay, Modell-Wechsel.
+
+## Update 2026-04-26 — TCC-Identity-Bug auf Tahoe gefixt (Tag `v2.1-tahoe-tcc-fixed`)
+
+Auf macOS Tahoe ordnet TCC App-Berechtigungen über den Mach-O-Pfad des Hauptprozesses zu. Der ursprüngliche Bash-Wrapper als `Contents/MacOS/IQspeakr` wurde nicht als „echte App" anerkannt — TCC fiel auf den per `exec()` aufgerufenen Python-Subprocess zurück. Folge: Settings-Eintrag „IQspeakr" mit grünem Schalter, aber `AXIsProcessTrusted()` / `CGPreflightListenEventAccess()` returnten weiter `False`. Hotkey + Auto-Paste funktionierten nicht.
+
+**Fix-Bausteine (Commit `ab9d8d9`):**
+
+1. **C-Mach-O-Launcher** statt Bash-Wrapper (`launcher.c` → kompiliert zu `Contents/MacOS/IQspeakr` als echtes arm64-Mach-O). Nur damit erkennt Tahoe TCC die Bundle-Identity.
+2. **Python-Standalone INNERHALB des Bundles** (`Contents/Resources/python/`) statt im User-Home. venv liegt weiter in `~/.iqspeakr/venv/`, sein `python3`-Symlink zeigt aufs Bundle-Python. Beim `execv` resolved macOS den Symlink → `proc_pidpath` = Bundle-Pfad.
+3. **`__PYVENV_LAUNCHER__` env var** im Launcher gesetzt — sonst aktiviert Python venv nicht (weil `_NSGetExecutablePath` den realpath returnt, nicht argv[0]).
+4. **App fragt zwei TCC-Kategorien ab:**
+   - Eingabeüberwachung (`CGPreflightListenEventAccess`) — für globalen Hotkey
+   - Bedienungshilfen (`AXIsProcessTrusted`) — für Cmd+V Auto-Paste
+   App-Wizard erklärt beide, Polling alle 3s erkennt Aktivierungen automatisch.
+5. **ffmpeg arm64-spezifisch** (`martin-riedl.de`) statt evermeet x86_64 → kein Rosetta-Bedarf.
+
+**Wichtig bei künftigen Änderungen:** Bundle nach erstem `codesign` NICHT mehr modifizieren — sonst ändert sich der CDHash und der TCC-Eintrag wird ungültig (Settings zeigt grün, TCC ignoriert).
+
+**Setup-Schritte für End-User:**
+1. DMG installieren → ~3 min Pip-Install (oder ~30s wenn Cache vorhanden)
+2. Mikrofon-Dialog → OK
+3. Doppelklick auf IQspeakr im Programme-Ordner
+4. Wizard kommt → in Settings BEIDE Tabs aktivieren (Eingabeüberwachung + Bedienungshilfen)
+5. Hotkey ⌃⇧ läuft
+
+Hartnäckige TCC-Probleme nach mehreren Test-Iterationen: `tccutil reset ListenEvent && tccutil reset Accessibility && sudo killall -HUP tccd`. Letztes Mittel: **Mac-Reboot** (TCC-Daemon-Caches komplett leeren).
 
 ## macOS 26.4+ spezifische Fallstricke (wichtig bei späteren Refactors)
 
