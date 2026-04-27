@@ -839,6 +839,10 @@ DEFAULT_CONFIG = {
     "cleanup_enabled": True,
     "language": "de",
     "overlay_enabled": True,
+    # Status-Notifications via Tray-Bubble. False = nur Fehler werden gezeigt
+    # ("Modell-Lade gescheitert", Whisper-Crash). Info wie "Kein Text erkannt"
+    # oder "Modell geladen" wird unterdrueckt.
+    "notify_enabled": True,
     # Style-Auswahl fuer die Cleanup-Prompt: formal | locker | sehr_locker | custom
     "style": "locker",
     # Wird nur ausgewertet wenn style == "custom".
@@ -1101,6 +1105,12 @@ OLLAMA_PULLING       = "pulling_model"
 OLLAMA_READY         = "ready"
 OLLAMA_ERROR         = "error"
 
+
+class _OllamaCancelled(Exception):
+    """User-Abbruch waehrend Install/Pull. Wird vom Worker gefangen, der
+    raeumt auf und setzt den State zurueck."""
+    pass
+
 # Modell-Optionen fuer den Setup-Dropdown. Reihenfolge = UI-Reihenfolge.
 OLLAMA_MODEL_OPTIONS = [
     ("llama3.2",  "llama3.2 (3B) - klein und schnell, Standard"),
@@ -1134,6 +1144,75 @@ class OllamaManager(QObject):
         self._state = OLLAMA_NOT_INSTALLED
         self._busy = False  # serialisiert Install/Pull/Uninstall
         self._lock = threading.Lock()
+        # User-getriggerter Abbruch waehrend laufendem Worker. Worker pruefen
+        # _check_cancel() zwischen Chunks/Lines/Polls.
+        self._cancel_event = threading.Event()
+
+    # --- Cancel ---
+    def cancel(self):
+        """Setzt das Cancel-Flag. Der laufende Worker wirft beim naechsten
+        _check_cancel() einen _OllamaCancelled und raeumt auf."""
+        if self._busy:
+            log.info("OllamaManager: cancel angefordert")
+        self._cancel_event.set()
+
+    def _check_cancel(self):
+        if self._cancel_event.is_set():
+            raise _OllamaCancelled()
+
+    # --- Ollama-"Integration" (Visibility) ---
+    def _remove_ollama_visibility(self):
+        """Versteckt Ollama im System: kein Tray-Icon, kein Start-Menue,
+        kein Autostart-Eintrag. Idempotent - kann gefahrlos mehrfach
+        aufgerufen werden, auch fuer bestehende Installs."""
+        # 1. Tray-Icon-Prozess beenden ("ollama app.exe" ist nur die GUI-Huelle).
+        #    "ollama.exe serve" (das Backend) wird nicht angetastet.
+        try:
+            subprocess.call(
+                ["taskkill", "/F", "/IM", "ollama app.exe"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        # 2. Autostart-Reg HKCU\...\Run\Ollama loeschen.
+        try:
+            subprocess.call(
+                ["reg", "delete",
+                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                 "/V", "Ollama", "/F"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        # 3. Start-Menue-Eintrag loeschen.
+        try:
+            sm = os.path.join(
+                os.environ.get("APPDATA", ""),
+                "Microsoft", "Windows", "Start Menu", "Programs", "Ollama",
+            )
+            if os.path.isdir(sm):
+                import shutil
+                shutil.rmtree(sm, ignore_errors=True)
+        except Exception:
+            pass
+        log.info("OllamaManager: Visibility entfernt (Tray, Autostart, Startmenue)")
+
+    def _start_ollama_serve(self):
+        """Startet `ollama serve` als detached Background-Prozess - laeuft
+        weiter wenn IQspeakr beendet wird, aber kein Fenster, kein Tray."""
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(
+            [OLLAMA_EXE, "serve"],
+            creationflags=flags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log.info("OllamaManager: ollama serve gestartet (detached)")
 
     # --- State ---
     def state(self):
@@ -1177,30 +1256,32 @@ class OllamaManager(QObject):
         ).start()
 
     def _refresh_worker(self, current_model):
-        ok, models = self._ping_service()
-        if not ok:
-            # Kein Service erreichbar - aber vielleicht installiert aber nicht gestartet?
-            if os.path.exists(OLLAMA_EXE):
-                # Versuche den Tray-Process von Ollama anzustarten.
-                try:
-                    subprocess.Popen(
-                        [OLLAMA_EXE, "serve"],
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
-                    # bis zu 8s warten
-                    for _ in range(16):
-                        _time.sleep(0.5)
-                        ok2, models2 = self._ping_service(timeout=1.5)
-                        if ok2:
-                            self._set_state(OLLAMA_READY)
-                            return
-                except Exception as e:
-                    log.warning(f"OllamaManager: serve-Start fehlgeschlagen: {e}")
-            self._set_state(OLLAMA_NOT_INSTALLED)
+        # Wenn Ollama installiert ist: Tray-Icon / Autostart / Startmenue
+        # einmal stillegen. Idempotent - falls schon weg, no-op. So wirkt
+        # die Visibility-Bereinigung auch fuer User die ueber eine
+        # vorherige Version installiert haben.
+        if os.path.exists(OLLAMA_EXE):
+            self._remove_ollama_visibility()
+
+        ok, _ = self._ping_service()
+        if ok:
+            self._set_state(OLLAMA_READY)
             return
-        # Service laeuft. READY auch ohne Modell - StyleView prueft separat
-        # ob das gewuenschte Modell schon gepullt ist.
-        self._set_state(OLLAMA_READY)
+
+        if os.path.exists(OLLAMA_EXE):
+            # Service down aber installiert -> selbst hochfahren als
+            # detached Backend-Prozess.
+            try:
+                self._start_ollama_serve()
+                for _ in range(16):
+                    _time.sleep(0.5)
+                    ok2, _ = self._ping_service(timeout=1.5)
+                    if ok2:
+                        self._set_state(OLLAMA_READY)
+                        return
+            except Exception as e:
+                log.warning(f"OllamaManager: serve-Start fehlgeschlagen: {e}")
+        self._set_state(OLLAMA_NOT_INSTALLED)
 
     def has_model(self, name):
         """Prueft synchron ob ein Modell schon gepullt ist."""
@@ -1225,7 +1306,9 @@ class OllamaManager(QObject):
         ).start()
 
     def _install_worker(self, model_name):
+        tmp_dir = None
         try:
+            self._cancel_event.clear()
             # Schritt 1: Setup-Exe herunterladen.
             self._set_state(OLLAMA_DOWNLOADING)
             tmp_dir = tempfile.mkdtemp(prefix="iqspeakr_ollama_")
@@ -1237,6 +1320,14 @@ class OllamaManager(QObject):
             self.install_progress.emit("Installation laeuft...")
             self._run_installer(setup_exe)
 
+            # Schritt 2b: Ollama unsichtbar machen (kein Tray, kein Auto-
+            # start, kein Start-Menue), dann Backend selbst hochfahren.
+            self._remove_ollama_visibility()
+            try:
+                self._start_ollama_serve()
+            except Exception as e:
+                log.warning(f"_start_ollama_serve nach Install: {e}")
+
             # Schritt 3: Auf Service warten.
             self.install_progress.emit("Warte auf Ollama-Service...")
             self._wait_for_service(self.SERVICE_WAIT_SECONDS)
@@ -1246,11 +1337,28 @@ class OllamaManager(QObject):
             self._pull(model_name)
 
             self._set_state(OLLAMA_READY)
+        except _OllamaCancelled:
+            log.info("OllamaManager: install abgebrochen vom User")
+            self.install_progress.emit("Abgebrochen.")
+            # State zurueck setzen abhaengig davon, wie weit wir gekommen sind.
+            if os.path.exists(OLLAMA_EXE):
+                ok, _ = self._ping_service()
+                self._set_state(OLLAMA_READY if ok else OLLAMA_NOT_INSTALLED)
+            else:
+                self._set_state(OLLAMA_NOT_INSTALLED)
         except Exception as e:
             log.exception("OllamaManager: install fehlgeschlagen")
             self.error_message.emit(str(e))
             self._set_state(OLLAMA_ERROR)
         finally:
+            # tempdir aufraeumen (Setup.exe ist 1.8 GB).
+            if tmp_dir and os.path.isdir(tmp_dir):
+                try:
+                    import shutil
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+            self._cancel_event.clear()
             with self._lock:
                 self._busy = False
 
@@ -1300,6 +1408,7 @@ class OllamaManager(QObject):
                     with open(dest_path, mode) as f:
                         self.download_progress.emit(done, total)
                         while True:
+                            self._check_cancel()
                             chunk = resp.read(self.DOWNLOAD_CHUNK)
                             if not chunk:
                                 break
@@ -1333,12 +1442,34 @@ class OllamaManager(QObject):
         # Inno-Setup-Flags - laut https://jrsoftware.org/ishelp/index.php?topic=setupcmdline
         # /VERYSILENT: keine UI, /SUPPRESSMSGBOXES: keine Dialoge,
         # /NORESTART: kein Reboot-Prompt am Ende.
+        # Popen+poll-Schleife (statt subprocess.call), damit wir bei
+        # User-Cancel den Installer-Prozess terminieren koennen.
         cmd = [setup_exe, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
         log.info(f"OllamaManager: starte Installer {cmd}")
-        rc = subprocess.call(
+        proc = subprocess.Popen(
             cmd,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        try:
+            while proc.poll() is None:
+                if self._cancel_event.is_set():
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    raise _OllamaCancelled()
+                _time.sleep(0.3)
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        rc = proc.returncode
         if rc != 0:
             raise RuntimeError(f"OllamaSetup.exe Exit-Code {rc}")
         log.info("OllamaManager: Installer fertig (rc=0)")
@@ -1366,6 +1497,7 @@ class OllamaManager(QObject):
         with urllib.request.urlopen(req, timeout=None) as resp:
             buf = b""
             while True:
+                self._check_cancel()
                 chunk = resp.read(4096)
                 if not chunk:
                     break
@@ -1408,15 +1540,21 @@ class OllamaManager(QObject):
 
     def _pull_only_worker(self, model_name):
         try:
-            previous = self._state
+            self._cancel_event.clear()
             self._set_state(OLLAMA_PULLING)
             self._pull(model_name)
             self._set_state(OLLAMA_READY)
+        except _OllamaCancelled:
+            log.info("OllamaManager: pull abgebrochen vom User")
+            self.install_progress.emit("Abgebrochen.")
+            ok, _ = self._ping_service()
+            self._set_state(OLLAMA_READY if ok else OLLAMA_NOT_INSTALLED)
         except Exception as e:
             log.exception("OllamaManager: pull fehlgeschlagen")
             self.error_message.emit(str(e))
             self._set_state(OLLAMA_ERROR)
         finally:
+            self._cancel_event.clear()
             with self._lock:
                 self._busy = False
 
@@ -2568,6 +2706,15 @@ class SettingsView(QWidget):
         self._overlay_cb.toggled.connect(self._on_overlay_toggled)
         gl.addRow(self._form_label(""), self._overlay_cb)
 
+        self._notify_cb = QCheckBox("Statusmeldungen als Tray-Benachrichtigung anzeigen")
+        self._notify_cb.setToolTip(
+            "Aus = nur Fehler werden gezeigt. Info-Meldungen wie\n"
+            "\"Kein Text erkannt\" oder \"Modell geladen\" werden unterdrueckt."
+        )
+        self._notify_cb.setChecked(bool(self.app.config.get("notify_enabled", True)))
+        self._notify_cb.toggled.connect(self._on_notify_toggled)
+        gl.addRow(self._form_label(""), self._notify_cb)
+
         v.addWidget(general)
 
         # --- Ollama-Block ---
@@ -2680,6 +2827,10 @@ class SettingsView(QWidget):
         self.app.config["overlay_enabled"] = bool(on)
         save_config(self.app.config)
 
+    def _on_notify_toggled(self, on):
+        self.app.config["notify_enabled"] = bool(on)
+        save_config(self.app.config)
+
     def _on_cleanup_toggled(self, on):
         self.app.config["cleanup_enabled"] = bool(on)
         save_config(self.app.config)
@@ -2743,6 +2894,10 @@ class SettingsView(QWidget):
     def _on_action_clicked(self):
         state = self.app.ollama_mgr.state()
         model = self._model_combo.currentData() or self.app.config.get("ollama_model", "llama3.2")
+        if state in (OLLAMA_DOWNLOADING, OLLAMA_INSTALLING, OLLAMA_PULLING):
+            # Button ist gerade "Abbrechen" - Cancel an den laufenden Worker.
+            self.app.ollama_mgr.cancel()
+            return
         if state == OLLAMA_NOT_INSTALLED or state == OLLAMA_ERROR:
             self.app.ollama_mgr.install(model)
         elif state == OLLAMA_READY:
@@ -2783,9 +2938,9 @@ class SettingsView(QWidget):
         elif state == OLLAMA_DOWNLOADING:
             self._ollama_status.setText("Lade OllamaSetup.exe herunter...")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
-            self._action_btn.setText("Wird installiert...")
-            self._set_action_role("primary")
-            self._action_btn.setEnabled(False)
+            self._action_btn.setText("Abbrechen")
+            self._set_action_role("danger")
+            self._action_btn.setEnabled(True)
             self._model_combo.setEnabled(False)
             self._cleanup_cb.setEnabled(False)
             self._progress.setVisible(True)
@@ -2793,9 +2948,9 @@ class SettingsView(QWidget):
         elif state == OLLAMA_INSTALLING:
             self._ollama_status.setText("Installer laeuft...")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
-            self._action_btn.setText("Wird installiert...")
-            self._set_action_role("primary")
-            self._action_btn.setEnabled(False)
+            self._action_btn.setText("Abbrechen")
+            self._set_action_role("danger")
+            self._action_btn.setEnabled(True)
             self._model_combo.setEnabled(False)
             self._cleanup_cb.setEnabled(False)
             self._progress.setRange(0, 0)
@@ -2804,9 +2959,9 @@ class SettingsView(QWidget):
         elif state == OLLAMA_PULLING:
             self._ollama_status.setText("Lade Modell herunter...")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
-            self._action_btn.setText("Modell wird geladen...")
-            self._set_action_role("primary")
-            self._action_btn.setEnabled(False)
+            self._action_btn.setText("Abbrechen")
+            self._set_action_role("danger")
+            self._action_btn.setEnabled(True)
             self._model_combo.setEnabled(False)
             self._cleanup_cb.setEnabled(False)
             self._progress.setVisible(True)
@@ -2870,6 +3025,21 @@ class MainWindow(QMainWindow):
         self.app = app
         self.setWindowTitle("IQspeakr")
         self.setMinimumSize(960, 600)
+        # Default-Groesse beim ersten Oeffnen. Skaliert auf 80% des
+        # primaeren Bildschirms wenn der zu klein fuer 1180x780 ist.
+        try:
+            screen = QGuiApplication.primaryScreen().availableGeometry()
+            target_w = min(1180, int(screen.width() * 0.85))
+            target_h = min(780, int(screen.height() * 0.85))
+            self.resize(max(target_w, 960), max(target_h, 600))
+            # Zentrieren auf dem primaeren Bildschirm.
+            self.move(
+                screen.x() + (screen.width() - self.width()) // 2,
+                screen.y() + (screen.height() - self.height()) // 2,
+            )
+        except Exception as e:
+            log.warning(f"MainWindow: Default-Geometry-Fehler: {e}")
+            self.resize(1180, 780)
         if os.path.exists(APP_ICON_PATH):
             self.setWindowIcon(QIcon(APP_ICON_PATH))
 
@@ -3022,7 +3192,9 @@ class IQspeakrApp(QObject):
     # (tray-icon, menue, notifications) im Main-Thread zu aktualisieren.
     icon_state_sig = Signal(str)
     rebuild_menu_sig = Signal()
-    notify_sig = Signal(str, str)
+    # 3. Argument ist Level: "info" (per User-Toggle ausschaltbar) oder
+    # "error" (immer angezeigt, auch bei notify_enabled=False).
+    notify_sig = Signal(str, str, str)
     status_sig = Signal(str)
     # Overlay-Show/Hide MUSS ueber Signal laufen, nicht direkt: _start_recording
     # / _stop_recording werden aus dem pynput-Listener-Thread aufgerufen, und
@@ -3120,7 +3292,12 @@ class IQspeakrApp(QObject):
         except Exception as e:
             log.warning(f"Icon-Update fehlgeschlagen: {e}")
 
-    def _on_notify(self, title, message):
+    def _on_notify(self, title, message, level):
+        # Info-Notifications nur zeigen wenn der User sie eingeschaltet hat.
+        # Error-Notifications IMMER zeigen, sonst sieht der User nicht wenn
+        # was Kaputtes passiert (Modell-Lade-Fehler, Whisper-Crash, ...).
+        if level != "error" and not self.config.get("notify_enabled", True):
+            return
         try:
             self.tray.showMessage(title, message, QSystemTrayIcon.Information, 4000)
         except Exception as e:
@@ -3134,8 +3311,8 @@ class IQspeakrApp(QObject):
     def _set_icon_state(self, state):
         self.icon_state_sig.emit(state)
 
-    def _notify(self, title, message):
-        self.notify_sig.emit(title, message)
+    def _notify(self, title, message, level="info"):
+        self.notify_sig.emit(title, message, level)
 
     def _set_status(self, text):
         self.status_sig.emit(text)
@@ -3451,7 +3628,7 @@ class IQspeakrApp(QObject):
         except Exception:
             log.exception("FATAL: WhisperModel-Laden ist gescheitert")
             self._set_status("Fehler beim Modell-Laden")
-            self._notify("IQspeakr - Fehler", "Modell-Laden gescheitert. Siehe IQspeakr.log.")
+            self._notify("IQspeakr - Fehler", "Modell-Laden gescheitert. Siehe IQspeakr.log.", level="error")
             return
 
         # Persistenten Audio-Stream oeffnen - bleibt bis zum Quit aktiv.
@@ -3719,7 +3896,7 @@ class IQspeakrApp(QObject):
                 log.info(f"Whisper-Ergebnis: '{raw_text}' (Sprache: {info.language})")
             except Exception as e:
                 log.error(f"Whisper-Fehler: {e}")
-                self._notify("IQspeakr - Fehler", str(e)[:100])
+                self._notify("IQspeakr - Fehler", str(e)[:100], level="error")
                 return
 
             if raw_text:
