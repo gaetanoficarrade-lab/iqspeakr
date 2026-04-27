@@ -441,6 +441,8 @@ _LUCIDE_CHECK = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24
 
 _LUCIDE_BAR_CHART = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>"""
 
+_LUCIDE_INFO = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/></svg>"""
+
 
 def _lucide_icon(svg_template, size=18, color=None):
     """Rendert einen Lucide-SVG-Template-String zur QIcon. `color` ersetzt
@@ -579,62 +581,36 @@ class PillOverlay(QWidget):
             self.hide()
 
 
-CLEANUP_PROMPT_LOCKER = """Du bereinigst gesprochene Sprache minimal-invasiv. WICHTIG: Du DARFST den Text NICHT umformulieren oder paraphrasieren. Der Sprecher soll seinen eigenen Stil wiedererkennen.
+CLEANUP_PROMPT_LOCKER = """Bereinige den gesprochenen Text minimal-invasiv:
+- Fuellwoerter weg (aehm, aeh, also, halt, quasi, irgendwie)
+- Wortdoppelungen / Stotterer weg
+- Satzzeichen + Grossschreibung korrigieren
+- Offensichtliche Grammatikfehler korrigieren
+NICHT umformulieren, NICHT zusammenfassen, Stil bewahren.
 
-ERLAUBT:
-- Fuellwoerter entfernen (aehm, aeh, also, sozusagen, halt, quasi, irgendwie, eben, ja, nun)
-- Wortdoppelungen und Stotterer entfernen (z.B. "ich ich habe" -> "ich habe")
-- Satzzeichen und Grossschreibung korrigieren
-- Offensichtliche Grammatikfehler korrigieren (z.B. falsche Artikel, Kasus)
-- Kleine Satzumstellungen NUR wenn grammatikalisch notwendig
-
-VERBOTEN:
-- Woerter durch Synonyme ersetzen
-- Saetze neu formulieren oder glaetten
-- Inhalt straffen oder zusammenfassen
-- Stil veraendern (umgangssprachlich -> schriftsprachlich)
-- Eigene Woerter hinzufuegen
-
-Antworte NUR mit dem bereinigten Text, ohne Erklaerungen, ohne Anfuehrungszeichen.
+Antworte NUR mit dem bereinigten Text.
 
 Text: {text}"""
 
-CLEANUP_PROMPT_FORMAL = """Du bereinigst gesprochene Sprache und ueberfuehrst sie in geschriebenes, foermliches Deutsch. Der Inhalt bleibt vollstaendig erhalten - nur Form und Register werden angehoben.
-
-ERLAUBT:
-- Fuellwoerter, Wortdoppelungen und Stotterer entfernen
-- Satzzeichen, Grossschreibung und Grammatik korrigieren
-- Umgangssprache durch schriftsprachliche Aequivalente ersetzen (z.B. "halt" -> entfernen, "kriegen" -> "erhalten", "ne" -> "eine")
+CLEANUP_PROMPT_FORMAL = """Bereinige den gesprochenen Text und hebe ihn in foermliches Schriftdeutsch:
+- Fuellwoerter, Wortdoppelungen, Stotterer weg
+- Satzzeichen, Grossschreibung, Grammatik korrigieren
+- Umgangssprache schriftsprachlich ersetzen ("kriegen" -> "erhalten", "ne" -> "eine")
+- Verkuerzungen ausschreiben ("geht's" -> "geht es")
 - Saetze umstellen, wenn der Schriftstil das verlangt
-- Hoeflichkeitsformen verwenden, wenn aus dem Kontext klar erkennbar
-- Verkuerzungen ausschreiben (z.B. "geht's" -> "geht es", "ist's" -> "ist es")
+NICHT inhaltlich aendern, NICHTS hinzufuegen.
 
-VERBOTEN:
-- Inhalt streichen oder zusammenfassen
-- Eigene Aussagen hinzufuegen
-- Inhaltliche Aussage veraendern
-
-Antworte NUR mit dem bereinigten Text, ohne Erklaerungen, ohne Anfuehrungszeichen.
+Antworte NUR mit dem bereinigten Text.
 
 Text: {text}"""
 
-CLEANUP_PROMPT_SEHR_LOCKER = """Du entfernst nur Spracharten der Pause aus diktierter Sprache. Sonst NICHTS. Der Sprecher will seinen Originaltext exakt 1:1 zurueck, nur ohne Stotterer.
+CLEANUP_PROMPT_SEHR_LOCKER = """Entferne nur Fuelllaute aus dem Text. Sonst NICHTS aendern.
+- "aehm", "aeh", "oeh", "mhm" entfernen
+- Direkte Wortdoppelungen wie "ich ich" entfernen (NICHT "sehr sehr")
+- Punkt am Satzende setzen wenn fehlt
 
-ERLAUBT (und nur das):
-- Reine Fuelllaute entfernen: "aehm", "aeh", "oeh", "mhm"
-- Direkte Wortdoppelungen entfernen, wenn klar ein Stotterer ist (z.B. "ich ich habe" -> "ich habe", aber NICHT "sehr sehr gut")
-- Offensichtliche Satzzeichen am Satzende setzen (Punkt, Fragezeichen)
-
-VERBOTEN:
-- Grammatik korrigieren
-- Umgangssprache aendern
-- Wortdoppelungen entfernen, die zur Betonung dienen
-- Gross-/Kleinschreibung anders setzen als im Original (ausser am Satzanfang)
-- Satzumstellungen
-- Synonyme einsetzen
-- Fuellwoerter wie "halt", "also", "quasi" entfernen - die sind Stil
-
-Antworte NUR mit dem unveraenderten Text minus Fuelllaute, ohne Erklaerungen, ohne Anfuehrungszeichen.
+NICHT Grammatik aendern, NICHT umstellen, NICHT Fuellwoerter wie "halt"/"also" entfernen.
+Antworte NUR mit dem Text minus Fuelllaute.
 
 Text: {text}"""
 
@@ -834,9 +810,20 @@ def _whisper_model_cached(size):
 # --- Config ---
 DEFAULT_CONFIG = {
     "hotkey": "ctrl+shift",
-    "whisper_model": "base",
-    "ollama_model": "llama3.2",
-    "cleanup_enabled": True,
+    # tiny ist ~3x schneller als base bei Diktat-Qualitaet im Alltag
+    # praktisch identisch. User kann in Settings auf base/small/medium hoch.
+    "whisper_model": "tiny",
+    # 1B-Param-Variante laeuft auf CPU ~3x schneller als 3B fuer reines
+    # Cleanup. Aelteren Configs bleibt ihre alte Wahl - dies ist nur
+    # die Erst-Install-Default.
+    "ollama_model": "llama3.2:1b",
+    # User-Toggle "Ollama-Backend aktiv". False -> "ollama serve" wird
+    # gekillt, _refresh_worker startet nicht neu, Cleanup wird uebersprungen.
+    "ollama_active": True,
+    # Default AUS: Whisper macht bereits Punktuation, Grossschreibung und
+    # filtert Fuellwoerter. Cleanup kostet 3-7s pro Aufnahme. Power-User
+    # koennen es bei Bedarf in Settings einschalten.
+    "cleanup_enabled": False,
     "language": "de",
     "overlay_enabled": True,
     # Status-Notifications via Tray-Bubble. False = nur Fehler werden gezeigt
@@ -1103,6 +1090,7 @@ OLLAMA_DOWNLOADING   = "downloading"
 OLLAMA_INSTALLING    = "installing"
 OLLAMA_PULLING       = "pulling_model"
 OLLAMA_READY         = "ready"
+OLLAMA_PAUSED        = "paused"  # User-Toggle: Backend ist gestoppt
 OLLAMA_ERROR         = "error"
 
 
@@ -1111,13 +1099,20 @@ class _OllamaCancelled(Exception):
     raeumt auf und setzt den State zurueck."""
     pass
 
-# Modell-Optionen fuer den Setup-Dropdown. Reihenfolge = UI-Reihenfolge.
+# Modell-Optionen fuer den Setup-Dropdown. Reihenfolge = UI-Reihenfolge,
+# nach Geschwindigkeit auf CPU sortiert (schnellstes oben).
+# Speed-Klassen:
+#   ⚡⚡⚡ = ~1 s pro Cleanup
+#   ⚡⚡  = ~2-3 s
+#   ⚡   = ~4-6 s
+#   🐢   = >6 s
 OLLAMA_MODEL_OPTIONS = [
-    ("llama3.2",  "llama3.2 (3B) - klein und schnell, Standard"),
-    ("llama3.1",  "llama3.1 (8B) - bessere Qualitaet, mehr RAM"),
-    ("mistral",   "mistral (7B) - gut fuer Deutsch und Englisch"),
-    ("gemma2",    "gemma2 (9B) - Google, solide Qualitaet"),
-    ("phi3",      "phi3 (3.8B) - Microsoft, kompakt und gut"),
+    ("llama3.2:1b", "llama3.2 1B   ⚡⚡⚡  sehr schnell - Empfohlen fuer Cleanup"),
+    ("llama3.2",    "llama3.2 3B   ⚡⚡    schnell - mehr Qualitaet"),
+    ("phi3",        "phi3 3.8B     ⚡⚡    schnell - Microsoft, kompakt"),
+    ("mistral",     "mistral 7B    ⚡      moderat - gut fuer Deutsch/Englisch"),
+    ("llama3.1",    "llama3.1 8B   ⚡      moderat - hoehere Qualitaet"),
+    ("gemma2",      "gemma2 9B     🐢    langsam - beste Qualitaet, hohe RAM-Last"),
 ]
 
 
@@ -1147,6 +1142,10 @@ class OllamaManager(QObject):
         # User-getriggerter Abbruch waehrend laufendem Worker. Worker pruefen
         # _check_cancel() zwischen Chunks/Lines/Polls.
         self._cancel_event = threading.Event()
+        # User-Toggle: wenn False -> Backend wird gekillt, refresh_state
+        # startet's nicht neu, Cleanup uebersprungen, State = PAUSED.
+        # Wird vom IQspeakrApp aus der Config gesetzt, default True.
+        self._user_active = True
 
     # --- Cancel ---
     def cancel(self):
@@ -1214,6 +1213,41 @@ class OllamaManager(QObject):
         )
         log.info("OllamaManager: ollama serve gestartet (detached)")
 
+    def _stop_ollama_serve(self):
+        """Killt `ollama.exe`-Prozesse (Backend) per taskkill. Idempotent."""
+        try:
+            subprocess.call(
+                ["taskkill", "/F", "/IM", "ollama.exe"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            log.info("OllamaManager: ollama.exe (Backend) beendet")
+        except Exception as e:
+            log.warning(f"OllamaManager: Backend-Stop fehlgeschlagen: {e}")
+
+    # --- User-Toggle Pause/Resume ---
+    def set_user_active(self, active):
+        """Wird von SettingsView aufgerufen wenn der User den
+        'Ollama-Backend aktiv'-Toggle umschaltet."""
+        active = bool(active)
+        if active == self._user_active:
+            return
+        self._user_active = active
+        if active:
+            log.info("OllamaManager: User hat aktiviert -> refresh")
+            self.refresh_state()
+        else:
+            log.info("OllamaManager: User hat pausiert -> Backend stop")
+            self._stop_ollama_serve()
+            if os.path.exists(OLLAMA_EXE):
+                self._set_state(OLLAMA_PAUSED)
+            else:
+                self._set_state(OLLAMA_NOT_INSTALLED)
+
+    def is_user_active(self):
+        return self._user_active
+
     # --- State ---
     def state(self):
         return self._state
@@ -1256,10 +1290,17 @@ class OllamaManager(QObject):
         ).start()
 
     def _refresh_worker(self, current_model):
+        # User hat das Backend pausiert -> nichts auto-starten.
+        if not self._user_active:
+            self._stop_ollama_serve()
+            if os.path.exists(OLLAMA_EXE):
+                self._set_state(OLLAMA_PAUSED)
+            else:
+                self._set_state(OLLAMA_NOT_INSTALLED)
+            return
+
         # Wenn Ollama installiert ist: Tray-Icon / Autostart / Startmenue
-        # einmal stillegen. Idempotent - falls schon weg, no-op. So wirkt
-        # die Visibility-Bereinigung auch fuer User die ueber eine
-        # vorherige Version installiert haben.
+        # einmal stillegen. Idempotent - falls schon weg, no-op.
         if os.path.exists(OLLAMA_EXE):
             self._remove_ollama_visibility()
 
@@ -2728,24 +2769,39 @@ class SettingsView(QWidget):
         self._ollama_status.setStyleSheet(f"color: {THEME_TEXT_SECONDARY};")
         ob.addWidget(self._ollama_status)
 
-        # Modell-Auswahl: zwei Rollen je nach State.
-        # not_installed: das Modell wird beim Erstinstall mitgepullt.
-        # ready: das Modell wird zum aktiven Cleanup-Modell, evtl. Pull triggern.
+        # Modell-Dropdown: speichert nur die Wahl (kein Auto-Pull mehr).
+        # Daneben "Modell herunterladen"-Button bzw. "Bereit"-Label, je nach
+        # ob das gewaehlte Modell schon lokal liegt.
         self._model_combo = QComboBox()
         for key, label in OLLAMA_MODEL_OPTIONS:
             self._model_combo.addItem(label, key)
-        cur_m = self.app.config.get("ollama_model", "llama3.2")
+        cur_m = self.app.config.get("ollama_model", "llama3.2:1b")
         for i in range(self._model_combo.count()):
             if self._model_combo.itemData(i) == cur_m:
                 self._model_combo.setCurrentIndex(i)
                 break
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
 
+        self._model_status_lbl = QLabel("")
+        self._model_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        self._model_pull_btn = QPushButton("Modell herunterladen")
+        self._model_pull_btn.setMinimumHeight(28)
+        self._model_pull_btn.setProperty("role", "primary")
+        self._model_pull_btn.clicked.connect(self._on_pull_clicked)
+        self._model_pull_btn.setVisible(False)
+
         model_form = QFormLayout()
         model_form.setHorizontalSpacing(20)
-        model_form.setVerticalSpacing(10)
+        model_form.setVerticalSpacing(8)
         model_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         model_form.addRow(self._form_label("Modell"), self._model_combo)
+
+        # Eigene Zeile fuer Modell-Status + Download-Button
+        model_status_row = QHBoxLayout()
+        model_status_row.setSpacing(10)
+        model_status_row.addWidget(self._model_status_lbl, 1)
+        model_status_row.addWidget(self._model_pull_btn, 0)
+        model_form.addRow(self._form_label(""), self._wrap_row(model_status_row))
         ob.addLayout(model_form)
 
         self._progress = QProgressBar()
@@ -2770,6 +2826,82 @@ class SettingsView(QWidget):
         self._cleanup_cb.setChecked(bool(self.app.config.get("cleanup_enabled", True)))
         self._cleanup_cb.toggled.connect(self._on_cleanup_toggled)
         ob.addWidget(self._cleanup_cb)
+
+        # User-Toggle "Backend aktiv" - getrennt von cleanup_enabled.
+        # Wenn aus: ollama serve wird gekillt, kein RAM-Verbrauch, Cleanup
+        # uebersprungen.
+        self._active_cb = QCheckBox("Ollama-Backend aktiv lassen")
+        self._active_cb.setToolTip(
+            "Aus = ollama serve wird beendet, kein Cleanup, kein RAM-Verbrauch.\n"
+            "An = Backend laeuft im Hintergrund, sobald IQspeakr offen ist."
+        )
+        self._active_cb.setChecked(bool(self.app.config.get("ollama_active", True)))
+        self._active_cb.toggled.connect(self._on_active_toggled)
+        ob.addWidget(self._active_cb)
+
+        # Erklaer-Box: wann Ollama-Cleanup wirklich Sinn macht. Auf User-
+        # Wunsch deutlich sichtbar als Akzent-getoenter Frame mit Info-Icon.
+        info_box = QFrame()
+        info_box.setObjectName("OllamaInfoBox")
+        info_box.setStyleSheet(
+            "#OllamaInfoBox {"
+            " background: rgba(99, 102, 241, 0.08);"
+            " border: 1px solid rgba(99, 102, 241, 0.32);"
+            " border-radius: 10px;"
+            "}"
+        )
+        info_outer = QHBoxLayout(info_box)
+        info_outer.setContentsMargins(18, 16, 18, 16)
+        info_outer.setSpacing(14)
+
+        info_icon = QLabel()
+        info_icon.setPixmap(_lucide_icon(_LUCIDE_INFO, 22, THEME_ACCENT).pixmap(22, 22))
+        info_icon.setFixedSize(22, 22)
+        info_outer.addWidget(info_icon, 0, Qt.AlignTop)
+
+        info_col = QVBoxLayout()
+        info_col.setSpacing(10)
+
+        info_title = QLabel("Wann brauchst du KI-Textbereinigung?")
+        f = info_title.font()
+        f.setPointSizeF(f.pointSizeF() + 1)
+        f.setBold(True)
+        info_title.setFont(f)
+        info_title.setStyleSheet(f"color: {THEME_TEXT};")
+        info_col.addWidget(info_title)
+
+        # Body als Rich-Text fuer ordentlichen Zeilenabstand und visuelle
+        # Hierarchie. Die Liste mit Bullet-Symbol ist dem User wichtig.
+        info_body = QLabel(
+            "<p style='margin: 0 0 8px 0; line-height: 1.5;'>"
+            "Whisper setzt bereits automatisch <b>Satzzeichen, Gro&szlig;schreibung</b> "
+            "und filtert die meisten <b>F&uuml;llw&ouml;rter</b> (&auml;hm, &auml;h) "
+            "sowie Stotterer raus. F&uuml;r klares, ruhiges Diktat reicht das vollkommen."
+            "</p>"
+            "<p style='margin: 0 0 4px 0;'><b>Cleanup nur einschalten, wenn du:</b></p>"
+            "<ul style='margin: 0 0 8px 18px; line-height: 1.5;'>"
+            "<li>sehr unkonzentriert sprichst (viele &bdquo;&auml;hm&ldquo;, "
+            "&bdquo;halt&ldquo;, &bdquo;also&ldquo;, Wortdoppelungen)</li>"
+            "<li>echtes <b>f&ouml;rmliches Schriftdeutsch</b> m&ouml;chtest "
+            "(Style &bdquo;F&ouml;rmlich&ldquo;)</li>"
+            "<li>eigene Cleanup-Regeln einsetzen willst "
+            "(Style &bdquo;Individuell&ldquo;)</li>"
+            "</ul>"
+            "<p style='margin: 0; line-height: 1.5;'>"
+            "<b>Trade-off:</b> Cleanup kostet je nach Modell und Textl&auml;nge "
+            "<b>etwa 1&ndash;7 Sekunden</b> pro Aufnahme. Ohne Cleanup landet "
+            "der Text fast sofort im Zielfeld."
+            "</p>"
+        )
+        info_body.setWordWrap(True)
+        info_body.setTextFormat(Qt.RichText)
+        info_body.setStyleSheet(f"color: {THEME_TEXT_SECONDARY};")
+        info_col.addWidget(info_body)
+
+        info_outer.addLayout(info_col, 1)
+
+        ob.addSpacing(6)
+        ob.addWidget(info_box)
 
         v.addWidget(self._ollama_box)
 
@@ -2844,10 +2976,24 @@ class SettingsView(QWidget):
         self.app.config["ollama_model"] = new_model
         save_config(self.app.config)
         self.app.rebuild_menu_sig.emit()
-        # Wenn Ollama schon laeuft, Modell ggf. pullen.
-        if self.app.ollama_mgr.is_ready():
-            if not self.app.ollama_mgr.has_model(new_model):
-                self.app.ollama_mgr.pull_model(new_model)
+        # KEIN Auto-Pull mehr. _refresh_ollama_ui() zeigt jetzt entweder
+        # "Modell bereit" oder den "Modell herunterladen"-Button.
+        self._refresh_ollama_ui()
+        # Wenn das neue Modell schon lokal liegt: Warmup im Hintergrund,
+        # damit der erste Cleanup nicht den Modell-Reload-Tax zahlt.
+        if self.app.ollama_mgr.is_ready() and self.app.ollama_mgr.has_model(new_model):
+            threading.Thread(target=self.app._ollama_warmup, daemon=True).start()
+
+    def _on_pull_clicked(self):
+        new_model = self._model_combo.currentData()
+        if not new_model:
+            return
+        self.app.ollama_mgr.pull_model(new_model)
+
+    def _on_active_toggled(self, on):
+        self.app.config["ollama_active"] = bool(on)
+        save_config(self.app.config)
+        self.app.ollama_mgr.set_user_active(bool(on))
 
     # --- Ollama-State-Reaktion ---
     def _on_state_changed(self, _state):
@@ -2900,7 +3046,7 @@ class SettingsView(QWidget):
             return
         if state == OLLAMA_NOT_INSTALLED or state == OLLAMA_ERROR:
             self.app.ollama_mgr.install(model)
-        elif state == OLLAMA_READY:
+        elif state in (OLLAMA_READY, OLLAMA_PAUSED):
             confirm = QMessageBox.question(
                 self,
                 "Ollama deinstallieren",
@@ -2924,6 +3070,9 @@ class SettingsView(QWidget):
         # Sichtbarkeit Default zuruecksetzen
         self._progress.setVisible(False)
         self._progress_text.setVisible(False)
+        # Modell-Status-Label zuruecksetzen, wird in den Branches gesetzt
+        self._model_pull_btn.setVisible(False)
+        self._model_status_lbl.setText("")
         if state == OLLAMA_NOT_INSTALLED:
             self._ollama_status.setText(
                 "Ollama ist nicht installiert. Installiere es, um KI-"
@@ -2933,16 +3082,20 @@ class SettingsView(QWidget):
             self._action_btn.setText("Ollama herunterladen und installieren")
             self._set_action_role("primary")
             self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
             self._model_combo.setEnabled(True)
             self._cleanup_cb.setEnabled(False)
+            self._active_cb.setEnabled(False)
         elif state == OLLAMA_DOWNLOADING:
             self._ollama_status.setText("Lade OllamaSetup.exe herunter...")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
             self._action_btn.setText("Abbrechen")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
             self._model_combo.setEnabled(False)
             self._cleanup_cb.setEnabled(False)
+            self._active_cb.setEnabled(False)
             self._progress.setVisible(True)
             self._progress_text.setVisible(True)
         elif state == OLLAMA_INSTALLING:
@@ -2951,8 +3104,10 @@ class SettingsView(QWidget):
             self._action_btn.setText("Abbrechen")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
             self._model_combo.setEnabled(False)
             self._cleanup_cb.setEnabled(False)
+            self._active_cb.setEnabled(False)
             self._progress.setRange(0, 0)
             self._progress.setVisible(True)
             self._progress_text.setVisible(True)
@@ -2962,8 +3117,10 @@ class SettingsView(QWidget):
             self._action_btn.setText("Abbrechen")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
             self._model_combo.setEnabled(False)
             self._cleanup_cb.setEnabled(False)
+            self._active_cb.setEnabled(False)
             self._progress.setVisible(True)
             self._progress_text.setVisible(True)
         elif state == OLLAMA_READY:
@@ -2972,16 +3129,43 @@ class SettingsView(QWidget):
             self._action_btn.setText("Ollama deinstallieren")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
             self._model_combo.setEnabled(True)
             self._cleanup_cb.setEnabled(True)
+            self._active_cb.setEnabled(True)
+            # Modell-Status-Label + Pull-Button.
+            sel_model = self._model_combo.currentData() or self.app.config.get("ollama_model", "")
+            if sel_model:
+                if self.app.ollama_mgr.has_model(sel_model):
+                    self._model_status_lbl.setText("✓ Modell ist bereit")
+                    self._model_status_lbl.setStyleSheet(f"color: {THEME_SUCCESS}; font-size: 11px;")
+                    self._model_pull_btn.setVisible(False)
+                else:
+                    self._model_status_lbl.setText("Modell ist noch nicht heruntergeladen.")
+                    self._model_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+                    self._model_pull_btn.setVisible(True)
+        elif state == OLLAMA_PAUSED:
+            self._ollama_status.setText(
+                "Ollama ist pausiert. Backend laeuft nicht, Cleanup uebersprungen."
+            )
+            self._ollama_status.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-weight: 500;")
+            self._action_btn.setText("Ollama deinstallieren")
+            self._set_action_role("danger")
+            self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
+            self._model_combo.setEnabled(True)
+            self._cleanup_cb.setEnabled(False)
+            self._active_cb.setEnabled(True)
         else:  # OLLAMA_ERROR
             self._ollama_status.setText("Fehler. Versuche es erneut.")
             self._ollama_status.setStyleSheet(f"color: {THEME_DANGER};")
             self._action_btn.setText("Erneut versuchen")
             self._set_action_role("primary")
             self._action_btn.setEnabled(True)
+            self._action_btn.setVisible(True)
             self._model_combo.setEnabled(True)
             self._cleanup_cb.setEnabled(False)
+            self._active_cb.setEnabled(True)
 
 
 # =====================================================================
@@ -3023,23 +3207,9 @@ class MainWindow(QMainWindow):
     def __init__(self, app, parent=None):
         super().__init__(parent)
         self.app = app
+        self._first_show = True
         self.setWindowTitle("IQspeakr")
         self.setMinimumSize(960, 600)
-        # Default-Groesse beim ersten Oeffnen. Skaliert auf 80% des
-        # primaeren Bildschirms wenn der zu klein fuer 1180x780 ist.
-        try:
-            screen = QGuiApplication.primaryScreen().availableGeometry()
-            target_w = min(1180, int(screen.width() * 0.85))
-            target_h = min(780, int(screen.height() * 0.85))
-            self.resize(max(target_w, 960), max(target_h, 600))
-            # Zentrieren auf dem primaeren Bildschirm.
-            self.move(
-                screen.x() + (screen.width() - self.width()) // 2,
-                screen.y() + (screen.height() - self.height()) // 2,
-            )
-        except Exception as e:
-            log.warning(f"MainWindow: Default-Geometry-Fehler: {e}")
-            self.resize(1180, 780)
         if os.path.exists(APP_ICON_PATH):
             self.setWindowIcon(QIcon(APP_ICON_PATH))
 
@@ -3176,6 +3346,31 @@ class MainWindow(QMainWindow):
     def _on_ollama_state(self, _state):
         self.style_view.refresh_lock()
 
+    def showEvent(self, event):
+        # Default-Geometry beim allerersten Show anwenden, NACHDEM alle
+        # Widgets layoutet sind und Qt seine Layout-Hints final hat.
+        # Sonst greift resize() nicht zuverlaessig (Hoehe oft zu klein).
+        # Bei nachfolgenden show()-Aufrufen (Tray-Doppelklick nach hide())
+        # behaelt das Fenster die Groesse die der User gesetzt hat.
+        super().showEvent(event)
+        if self._first_show:
+            self._first_show = False
+            self._apply_default_geometry()
+
+    def _apply_default_geometry(self):
+        try:
+            screen = QGuiApplication.primaryScreen().availableGeometry()
+            target_w = min(1180, int(screen.width() * 0.85))
+            target_h = min(780, int(screen.height() * 0.85))
+            self.resize(max(target_w, 960), max(target_h, 600))
+            self.move(
+                screen.x() + (screen.width() - self.width()) // 2,
+                screen.y() + (screen.height() - self.height()) // 2,
+            )
+        except Exception as e:
+            log.warning(f"MainWindow: Default-Geometry-Fehler: {e}")
+            self.resize(1180, 780)
+
     def closeEvent(self, event):
         # Schliessen versteckt nur, App lebt im Tray weiter.
         self.hide()
@@ -3250,6 +3445,9 @@ class IQspeakrApp(QObject):
         except Exception as e:
             log.warning(f"Stats-Migration fehlgeschlagen: {e}")
         self.ollama_mgr = OllamaManager(self)
+        # User-Toggle aus Config in den Manager spiegeln, BEVOR refresh_state
+        # spaeter im _load_model das Backend hochfaehrt.
+        self.ollama_mgr._user_active = bool(self.config.get("ollama_active", True))
         self.ollama_mgr.state_changed.connect(self._on_ollama_state_changed)
         self.main_window = None
 
@@ -3344,9 +3542,39 @@ class IQspeakrApp(QObject):
             self.cleanup_enabled = False
         elif not was:
             # Ollama frisch verfuegbar -> Cleanup wieder aktivieren falls
-            # User es eingeschaltet hatte.
+            # User es eingeschaltet hatte, plus Warmup-Anfrage damit das
+            # Modell schon im RAM ist wenn der erste Hotkey kommt.
             self.cleanup_enabled = bool(self.config.get("cleanup_enabled", True))
+            threading.Thread(target=self._ollama_warmup, daemon=True).start()
         self.rebuild_menu_sig.emit()
+
+    def _ollama_warmup(self):
+        """Mini-Generation gegen das aktuell konfigurierte Modell, damit
+        Ollama es ins RAM laedt + keep_alive setzt. Spart 5-10s beim
+        ersten echten Cleanup nach App-Start."""
+        try:
+            model = self.config.get("ollama_model", "llama3.2:1b")
+            # Pruefe ob das Modell ueberhaupt gepullt ist - sonst sinnlos.
+            if not self.ollama_mgr.has_model(model):
+                log.info(f"Ollama-Warmup: Modell '{model}' nicht installiert, skip")
+                return
+            payload = json.dumps({
+                "model": model,
+                "prompt": "Hi",
+                "stream": False,
+                "keep_alive": "30m",
+                "options": {"num_predict": 1, "temperature": 0},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                OLLAMA_URL, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            t0 = _time.time()
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                resp.read()
+            log.info(f"Ollama-Warmup ({model}): {(_time.time() - t0) * 1000:.0f}ms")
+        except Exception as e:
+            log.warning(f"Ollama-Warmup fehlgeschlagen: {e}")
 
     # --- Hilfsmethoden, von der SettingsView aufgerufen ---
 
@@ -3654,24 +3882,50 @@ class IQspeakrApp(QObject):
 
     def _cleanup_text(self, text):
         """Cleanup via Ollama, falls aktiviert + Service erreichbar.
-        Prompt wird aus dem aktuell gewaehlten Style gebaut."""
+        Prompt wird aus dem aktuell gewaehlten Style gebaut.
+
+        Speed-Optimierungen:
+        - Bypass bei <=3 Woertern ohne Satzzeichen (Mini-Aufnahmen wie "Ja",
+          "Test", "Okay") - spart ~2-4s
+        - keep_alive=30m: Modell bleibt im RAM zwischen Aufrufen
+        - temperature=0 + top_k=1: Greedy-Decoding, deterministisch + schneller
+        - num_predict ~2.5x Wortanzahl: Modell stoppt frueher
+        - num_thread=8: nutzt mehr CPU-Threads (default ist konservativ)
+        """
         if not self.cleanup_enabled or not self.ollama_mgr.is_ready():
+            return text
+        word_count = max(1, len(text.split()))
+        # Speed-Bypass fuer Mini-Aufnahmen.
+        if word_count <= 3 and not any(c in text for c in ".,!?;:"):
+            log.info(f"Cleanup-Bypass: {word_count} Woerter ohne Satzzeichen")
             return text
         try:
             prompt_template = get_cleanup_prompt(self.config)
+            num_predict = max(50, int(word_count * 2.5) + 10)
             payload = json.dumps({
                 "model": self.config["ollama_model"],
                 "prompt": prompt_template.format(text=text),
                 "stream": False,
-                "options": {"temperature": 0.1, "top_p": 0.5},
+                "keep_alive": "30m",
+                "options": {
+                    "temperature": 0,
+                    "top_k": 1,
+                    "num_predict": num_predict,
+                    "num_thread": 8,
+                },
             }).encode("utf-8")
             req = urllib.request.Request(
                 OLLAMA_URL, data=payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            t0 = _time.time()
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 cleaned = result.get("response", "").strip()
+                log.info(
+                    f"Cleanup: {(_time.time() - t0) * 1000:.0f}ms "
+                    f"({word_count} Woerter, Modell {self.config['ollama_model']})"
+                )
                 return cleaned if cleaned else text
         except Exception as e:
             log.warning(f"Cleanup fehlgeschlagen: {e}")
@@ -3876,12 +4130,17 @@ class IQspeakrApp(QObject):
 
     def _transcribe_frames(self, frames):
         audio_data = np.concatenate(frames, axis=0).flatten().astype(np.float32)
-        log.info(f"Transkribiere: {len(audio_data)} Samples, Peak: {np.max(np.abs(audio_data)):.4f}")
+        audio_dur_sec = len(audio_data) / float(SAMPLE_RATE)
+        log.info(
+            f"Transkribiere: {len(audio_data)} Samples ({audio_dur_sec:.2f}s), "
+            f"Peak: {np.max(np.abs(audio_data)):.4f}"
+        )
 
         try:
             lang = self.config.get("language")
             log.info(f"Starte Whisper-Transkription (Sprache: {lang})...")
             try:
+                t_whisper_start = _time.time()
                 segments, info = self.model.transcribe(
                     audio_data,
                     language=lang,
@@ -3893,7 +4152,12 @@ class IQspeakrApp(QObject):
                     condition_on_previous_text=False,
                 )
                 raw_text = "".join(seg.text for seg in segments).strip()
-                log.info(f"Whisper-Ergebnis: '{raw_text}' (Sprache: {info.language})")
+                whisper_ms = (_time.time() - t_whisper_start) * 1000
+                log.info(
+                    f"Whisper: {whisper_ms:.0f}ms ({whisper_ms / max(audio_dur_sec, 0.01):.1f}x "
+                    f"Realtime, Modell {self.config.get('whisper_model')}) "
+                    f"-> '{raw_text}'"
+                )
             except Exception as e:
                 log.error(f"Whisper-Fehler: {e}")
                 self._notify("IQspeakr - Fehler", str(e)[:100], level="error")
