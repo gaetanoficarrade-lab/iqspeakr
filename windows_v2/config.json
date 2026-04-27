@@ -1,0 +1,8 @@
+{
+  "hotkey": "ctrl+shift",
+  "whisper_model": "base",
+  "ollama_model": "llama3.2",
+  "cleanup_enabled": true,
+  "language": "de",
+  "overlay_enabled": false
+}
