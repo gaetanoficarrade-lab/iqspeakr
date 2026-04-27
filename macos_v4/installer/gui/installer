@@ -302,19 +302,29 @@ sleep 1
 rm -f "$STATUS_FILE"
 kill "$PROGRESS_PID" 2>/dev/null || true
 
-# Finder mit /Applications und IQspeakr-Icon hervorgehoben oeffnen, damit
-# der User die App sofort sieht und doppelklicken kann. Der Doppelklick vom
-# Finder startet die App ueber LaunchServices mit korrekter Bundle-Identity
-# (TCC-Eintraege erscheinen als "IQspeakr"). Wenn wir hier `open -n` selber
-# machen wuerden, kaeme auf Tahoe oft Error -10669, oder die TCC-Identity
-# verwaessert. Lieber lassen wir den User ein Mal klicken.
-open -R "$APP_PATH" 2>/dev/null || true
+# Frag den User ob er die App sofort starten will. Bei "Jetzt starten"
+# starten wir via `open` (LaunchServices, korrekte Bundle-Identity) und
+# zeigen Finder NICHT — der ist nur als Fallback noetig wenn der User
+# spaeter starten will. Bei "Spaeter" oeffnet Finder das Programme-
+# Verzeichnis mit IQspeakr selektiert, damit der User es findet.
+CHOICE=$(osascript -e 'try
+set theDialog to display dialog "IQspeakr wurde installiert.
 
-osascript -e 'try
-display dialog "IQspeakr wurde installiert.
+Beim ersten Start fuehrt dich die App durch Mikrofon und Bedienungshilfen — Schritt fuer Schritt.
 
-Letzter Schritt:
-Doppelklicke jetzt auf das IQspeakr-Symbol im Finder-Fenster.
+Soll ich IQspeakr jetzt starten?" with title "Fast fertig!" buttons {"Spaeter", "Jetzt starten"} default button "Jetzt starten" with icon note
+return button returned of theDialog
+on error
+return "Spaeter"
+end try' 2>/dev/null)
 
-Beim ersten Start fuehrt dich die App durch Mikrofon und Bedienungshilfen — Schritt fuer Schritt." with title "Fast fertig!" buttons {"OK"} default button "OK" with icon note
-end try' 2>/dev/null || true
+if [ "$CHOICE" = "Jetzt starten" ]; then
+    log "User: App sofort starten"
+    open "$APP_PATH" 2>/dev/null || true
+else
+    log "User: Spaeter starten - oeffne Finder mit Highlight"
+    # Finder zeigt /Applications, IQspeakr selektiert. Doppelklick vom
+    # Finder startet die App ueber LaunchServices mit sauberer Bundle-
+    # Identity (TCC-Eintraege als "IQspeakr").
+    open -R "$APP_PATH" 2>/dev/null || true
+fi
