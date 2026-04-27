@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# ============================================================
+#  IQspeakr v2 — GUI Installer für macOS (Homebrew-frei)
+#  Lädt Python-Standalone + ffmpeg direkt, keine Admin-Rechte.
+#
+#  Abweichungen zu v1:
+#   - Python 3.12 (wie v1, >=3.11 fuer openai-whisper)
+#   - Deps: PySide6 statt rumps, + pyperclip
+#   - App-Bundle mit LSUIElement=true (Menubar-Only)
+#   - Vor Install: pkill alte Instanzen + /tmp/iqspeakr.pid loeschen
+# ============================================================
+
+set -euo pipefail
+
+# --- Pfade ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES_DIR="$(cd "$SCRIPT_DIR/../Resources" && pwd)"
+INSTALL_DIR="$HOME/.iqspeakr"
+APP_PATH="/Applications/IQspeakr.app"
+# Python liegt INNERHALB des App-Bundles (statt in ~/.iqspeakr/python/).
+# Grund: macOS Tahoe TCC schaut beim Berechtigungs-Check auf den
+# Mach-O-Pfad des laufenden Prozesses (proc_pidpath, mit aufgeloesten
+# Symlinks). Wenn Python im Bundle-Pfad liegt, mappt TCC die Anfrage
+# auf die Bundle-ID com.iqspeakr.app — damit greift der Settings-
+# Eintrag "IQspeakr". Ohne diese Verlagerung sieht TCC den venv-Python
+# als selbststaendige App (== nicht in der Bedienungshilfen-Liste).
+PYTHON_DIR="$APP_PATH/Contents/Resources/python"
+BIN_DIR="$INSTALL_DIR/bin"
+VENV_PATH="$INSTALL_DIR/venv"
+STATUS_FILE="/tmp/iqspeakr-install-status"
+LOG_FILE="/tmp/iqspeakr-install.log"
+
+# --- Architektur-Detection ---
+ARCH_RAW="$(uname -m)"
+if [ "$ARCH_RAW" = "arm64" ]; then
+    PY_ARCH="aarch64"
+else
+    PY_ARCH="x86_64"
+fi
+
+# --- Download-URLs (1:1 aus v1 uebernommen) ---
+PYTHON_TAG="20241016"
+PYTHON_VERSION="3.12.7"
+PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_TAG}/cpython-${PYTHON_VERSION}+${PYTHON_TAG}-${PY_ARCH}-apple-darwin-install_only.tar.gz"
+# ffmpeg architektur-spezifisch: arm64-Macs sollen kein Rosetta brauchen.
+# evermeet.cx liefert per default Intel-only — daher fuer arm64 Macs auf
+# eine native ARM-Quelle (martin-riedl.de hat einen stabilen `latest`-
+# Redirect, faellt nicht bei Versionsupdates aus).
+if [ "$ARCH_RAW" = "arm64" ]; then
+    FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+    FFMPEG_URL_FALLBACK="https://www.osxexperts.net/ffmpeg711arm.zip"
+else
+    FFMPEG_URL="https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip"
+    FFMPEG_URL_FALLBACK=""
+fi
+# --- Hilfsfunktionen ---
+update_status() {
+    printf '%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "${4:-}" > "$STATUS_FILE"
+}
+
+# Statusfenster temporaer aus dem Weg raeumen (untere rechte Ecke, nicht
+# mehr floating), damit Apple-System-Dialoge sichtbar sind.
+status_background() {
+    printf 'BACKGROUND\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" > "$STATUS_FILE"
+}
+status_foreground() {
+    printf 'FOREGROUND\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" > "$STATUS_FILE"
+}
+
+# Bundle-Modus starten — versucht zuerst `open -n` (saubere TCC-Identity
+# als "IQspeakr"), fallback Direktaufruf falls macOS Tahoe -10669 wirft.
+launch_bundle_mode() {
+    local mode="$1"        # z.B. --setup-microphone
+    local status_file="$2" # z.B. /tmp/iqspeakr-mic-status
+    rm -f "$status_file"
+    # `open -n` failed silent oft, daher exit-code nicht zuverlaessig
+    open -n "$APP_PATH" --args "$mode" 2>>"$LOG_FILE" || true
+    sleep 3
+    # Wenn weder Status-File noch laufender Subprocess: Fallback
+    if [ ! -f "$status_file" ] && ! pgrep -f "IQspeakr.*${mode}" >/dev/null 2>&1; then
+        log "Bundle-Launch failed (-10669?), fallback Direktaufruf fuer $mode"
+        "$APP_PATH/Contents/MacOS/IQspeakr" "$mode" &
+    fi
+}
+
+fail() {
+    printf 'ERROR\n%s\n' "$1" > "$STATUS_FILE"
+    osascript -e "display dialog \"$1\" with title \"IQspeakr Installer\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+    exit 1
+}
+
+log() {
+    echo "$(date '+%H:%M:%S') $1" >> "$LOG_FILE"
+}
+
+# --- Fortschrittsfenster starten ---
+echo "" > "$STATUS_FILE"
+echo "" > "$LOG_FILE"
+log "Installer v2 gestartet (Arch: $ARCH_RAW)"
+
+# Alte IQspeakr-Instanzen beenden (verhindert Mehrfach-Paste nach Re-Install)
+pkill -f "\.iqspeakr/venv/bin/python.*app\.py" 2>/dev/null || true
+rm -f /tmp/iqspeakr.pid
+log "Alte Instanzen beendet (falls vorhanden)"
+
+# Vollstaendige Neuinstallation: altes ~/.iqspeakr entfernen
+# (Python + venv + ffmpeg werden frisch geholt)
+if [ -d "$INSTALL_DIR" ]; then
+    log "Entferne altes $INSTALL_DIR..."
+    rm -rf "$INSTALL_DIR"
+fi
+
+osascript -l JavaScript "$RESOURCES_DIR/progress.js" "$STATUS_FILE" &
+PROGRESS_PID=$!
+sleep 0.5
+
+mkdir -p "$INSTALL_DIR" "$BIN_DIR"
+
+# Altes App-Bundle entfernen, Skeleton frisch anlegen — Python kommt rein
+rm -rf "$APP_PATH"
+mkdir -p "$APP_PATH/Contents/MacOS"
+mkdir -p "$APP_PATH/Contents/Resources"
+
+# ============================================================
+# 1. Python-Standalone direkt INS Bundle entpacken
+# ============================================================
+update_status 5 "Lade Python..." "~40 MB, einmaliger Download" "Schritt 1 von 4"
+log "Lade Python..."
+
+TMP_PY="/tmp/iqspeakr-python.tar.gz"
+if ! curl -fL --progress-bar "$PYTHON_URL" -o "$TMP_PY" 2>>"$LOG_FILE"; then
+    fail "Python-Download fehlgeschlagen.\nPruefe deine Internetverbindung."
+fi
+update_status 15 "Entpacke Python..." "" "Schritt 1 von 4"
+mkdir -p "$PYTHON_DIR"
+if ! tar xzf "$TMP_PY" -C "$PYTHON_DIR" --strip-components=1 >>"$LOG_FILE" 2>&1; then
+    fail "Python-Archiv konnte nicht entpackt werden."
+fi
+rm -f "$TMP_PY"
+PYTHON3="$PYTHON_DIR/bin/python3"
+log "Python OK: $($PYTHON3 --version 2>&1) @ Bundle"
+
+# ============================================================
+# 2. ffmpeg (architektur-spezifisch downloaden, arm64 bevorzugt)
+# ============================================================
+update_status 25 "Lade ffmpeg..." "Audio-Decoder fuer Spracherkennung (~25 MB)" "Schritt 2 von 4"
+
+if [ ! -x "$BIN_DIR/ffmpeg" ]; then
+    TMP_FFMPEG="/tmp/iqspeakr-ffmpeg.zip"
+    if ! curl -fL --progress-bar "$FFMPEG_URL" -o "$TMP_FFMPEG" 2>>"$LOG_FILE"; then
+        if [ -n "$FFMPEG_URL_FALLBACK" ]; then
+            log "Primaere ffmpeg-URL fail, versuche Fallback"
+            curl -fL --progress-bar "$FFMPEG_URL_FALLBACK" -o "$TMP_FFMPEG" 2>>"$LOG_FILE" || \
+                fail "ffmpeg-Download fehlgeschlagen.\nPruefe Internetverbindung."
+        else
+            fail "ffmpeg-Download fehlgeschlagen."
+        fi
+    fi
+    if ! unzip -q -o "$TMP_FFMPEG" -d "$BIN_DIR" >>"$LOG_FILE" 2>&1; then
+        fail "ffmpeg-Archiv konnte nicht entpackt werden."
+    fi
+    chmod +x "$BIN_DIR/ffmpeg"
+    rm -f "$TMP_FFMPEG"
+    xattr -cr "$BIN_DIR/ffmpeg" 2>/dev/null || true
+fi
+log "ffmpeg OK ($BIN_DIR/ffmpeg)"
+
+# ============================================================
+# 3. Python-Pakete installieren (Whisper, PySide6, etc.)
+# ============================================================
+update_status 35 "Lade Python-Pakete..." "Whisper, Qt, PyTorch (~500 MB, dauert 1-3 Min)" "Schritt 3 von 4"
+log "Erstelle venv und installiere Pakete..."
+
+cp "$RESOURCES_DIR/app.py" "$INSTALL_DIR/"
+cp "$RESOURCES_DIR/tray_proc.py" "$INSTALL_DIR/"
+cp "$RESOURCES_DIR/requirements.txt" "$INSTALL_DIR/"
+[ -f "$RESOURCES_DIR/IQspeakr.icns" ] && cp "$RESOURCES_DIR/IQspeakr.icns" "$INSTALL_DIR/"
+[ -f "$INSTALL_DIR/config.json" ] || cp "$RESOURCES_DIR/config.json" "$INSTALL_DIR/"
+
+[ -d "$VENV_PATH" ] && rm -rf "$VENV_PATH"
+"$PYTHON3" -m venv "$VENV_PATH" >>"$LOG_FILE" 2>&1 || fail "venv konnte nicht erstellt werden"
+"$VENV_PATH/bin/pip" install -q --upgrade pip >>"$LOG_FILE" 2>&1
+if ! "$VENV_PATH/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt" >>"$LOG_FILE" 2>&1; then
+    fail "Python-Pakete konnten nicht installiert werden.\nPruefe Internetverbindung."
+fi
+log "venv OK"
+
+# ============================================================
+# 4. App-Bundle finalisieren (Python ist schon drin, jetzt Plist + Launcher)
+# ============================================================
+update_status 80 "Erstelle App-Bundle..." "/Applications/IQspeakr.app" "Schritt 4 von 4"
+log "Finalisiere App-Bundle..."
+
+# Info.plist — LSUIElement=true: kein Dock-Icon, nur Menubar.
+# Kombiniert mit `exec` im Launcher (statt nohup &) bleibt der Python-Prozess
+# Teil des Bundle-Kontexts, d.h. LaunchServices sieht die App als laufend und
+# das Python-Blatt-Icon erscheint NICHT im Dock.
+cat > "$APP_PATH/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>IQspeakr</string>
+    <key>CFBundleDisplayName</key>
+    <string>IQspeakr</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.iqspeakr.app</string>
+    <key>CFBundleVersion</key>
+    <string>2.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0</string>
+    <key>CFBundleExecutable</key>
+    <string>IQspeakr</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSBackgroundOnly</key>
+    <false/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>IQspeakr benötigt Zugriff auf das Mikrofon für Sprache-zu-Text.</string>
+</dict>
+</plist>
+PLIST
+
+# Launcher — PATH zeigt auf IQspeakr-eigenes Bin-Verzeichnis (ffmpeg).
+# Launcher: vorkompiliertes Mach-O-Binary (statt Bash-Skript), damit macOS
+# Tahoe TCC die App-Identitaet zuverlaessig auf das Bundle mappt. Das C-
+# Binary ist im DMG unter Resources/launcher und ruft per execv() das
+# Bundle-Python (Contents/Resources/python/bin/python3) mit ~/.iqspeakr/
+# app.py auf. Stdout/Stderr werden nach ~/IQspeakr.log umgeleitet.
+if [ ! -f "$RESOURCES_DIR/launcher" ]; then
+    fail "Im DMG fehlt der Launcher (Contents/Resources/launcher)."
+fi
+cp "$RESOURCES_DIR/launcher" "$APP_PATH/Contents/MacOS/IQspeakr"
+chmod +x "$APP_PATH/Contents/MacOS/IQspeakr"
+chmod +x "$APP_PATH/Contents/MacOS/IQspeakr"
+
+# Icon
+if [ -f "$INSTALL_DIR/IQspeakr.icns" ]; then
+    cp "$INSTALL_DIR/IQspeakr.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
+fi
+
+# Alle extended attributes entfernen (com.apple.quarantine, com.apple.metadata,
+# com.apple.provenance — letzteres kann auf macOS Tahoe LaunchServices
+# blockieren, was zu Error -10669 bei `open -n` fuehrt)
+xattr -cr "$APP_PATH" 2>/dev/null || true
+
+# Ad-hoc Code-Signing — gibt dem Bundle eine stabile Code-Identity, damit
+# TCC den Eintrag in den Settings als "IQspeakr" anzeigt statt als "Python"
+# (bei unsigned Bundles faellt macOS auf den Binary-Pfad zurueck) UND damit
+# auf macOS 15+ ueberhaupt der TCC-Dialog erscheint (ohne Signatur wird er
+# in Tahoe teilweise unterdrueckt). Self-signed reicht fuer TCC, fuer
+# Gatekeeper-Distribution waere Notarisierung noetig.
+if codesign --force --deep --sign - "$APP_PATH" >>"$LOG_FILE" 2>&1; then
+    log "Ad-hoc Code-Signing OK"
+else
+    log "Ad-hoc Code-Signing fehlgeschlagen (TCC zeigt evtl. 'Python' statt 'IQspeakr')"
+fi
+
+# Bei Launch Services registrieren (für Spotlight)
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+"$LSREGISTER" -u "$APP_PATH" 2>/dev/null || true
+"$LSREGISTER" -f "$APP_PATH" 2>/dev/null || true
+mdimport "$APP_PATH" 2>/dev/null || true
+
+log "App-Bundle OK (LSUIElement=true, ad-hoc signed)"
+
+# ============================================================
+# 5. Mikrofon-Berechtigung (waehrend Install) — Bedienungshilfen erst beim
+#    ersten App-Start (App.py-Wizard). Begruendung:
+#    - Mikrofon-TCC-Dialog ist robust auf Tahoe, "OK" reicht
+#    - Bedienungshilfen brauchen drag-and-drop ins Settings-Fenster, das
+#      kann die App selbst mit korrekter Bundle-Identity sauberer fuehren
+# ============================================================
+update_status 90 "Mikrofon-Zugriff erlauben" "Klicke 'OK' im macOS-Dialog (oben mittig)" ""
+status_background "Mikrofon-Zugriff erlauben" "macOS zeigt jetzt einen Dialog: 'IQspeakr moechte auf das Mikrofon zugreifen' — bitte 'OK' klicken." ""
+log "Triggere Mikrofon-TCC-Dialog..."
+
+# Aus dem gerade entpackten venv heraus sd.InputStream oeffnen — triggert TCC
+"$VENV_PATH/bin/python" -c "
+import sounddevice as sd, time
+try:
+    s = sd.InputStream(samplerate=16000, channels=1, dtype='float32')
+    s.start(); time.sleep(0.3); s.stop(); s.close()
+except Exception as e:
+    pass
+" 2>>"$LOG_FILE" &
+MIC_TRIGGER_PID=$!
+
+# Geben dem User Zeit, im TCC-Dialog OK zu klicken (max 60s)
+wait $MIC_TRIGGER_PID 2>/dev/null || true
+log "Mikrofon-Trigger fertig"
+status_foreground "Mikrofon erledigt" "Letzte Schritte..." ""
+
+# ============================================================
+# Fertig
+# ============================================================
+update_status 100 "Installation abgeschlossen!" "IQspeakr ist bereit." ""
+
+printf 'DONE\n' > "$STATUS_FILE"
+sleep 1
+rm -f "$STATUS_FILE"
+kill "$PROGRESS_PID" 2>/dev/null || true
+
+# Finder mit /Applications und IQspeakr-Icon hervorgehoben oeffnen, damit
+# der User die App sofort sieht und doppelklicken kann. Der Doppelklick vom
+# Finder startet die App ueber LaunchServices mit korrekter Bundle-Identity
+# (TCC-Eintraege erscheinen als "IQspeakr"). Wenn wir hier `open -n` selber
+# machen wuerden, kaeme auf Tahoe oft Error -10669, oder die TCC-Identity
+# verwaessert. Lieber lassen wir den User ein Mal klicken.
+open -R "$APP_PATH" 2>/dev/null || true
+
+osascript -e 'try
+display dialog "IQspeakr wurde installiert.
+
+Letzter Schritt:
+Doppelklicke jetzt auf das IQspeakr-Symbol im Finder-Fenster.
+
+Beim ersten Start fuehrt dich die App durch Mikrofon und Bedienungshilfen — Schritt fuer Schritt." with title "Fast fertig!" buttons {"OK"} default button "OK" with icon note
+end try' 2>/dev/null || true
