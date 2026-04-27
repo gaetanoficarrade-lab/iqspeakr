@@ -1126,6 +1126,8 @@ class OllamaManager(QObject):
     HTTP_TIMEOUT = 5.0
     SERVICE_WAIT_SECONDS = 60     # nach Install bis API erreichbar
     DOWNLOAD_CHUNK = 256 * 1024    # 256 KB pro Read aus dem Stream
+    DOWNLOAD_TIMEOUT = 120.0       # Sekunden zwischen Reads (urlopen socket-timeout)
+    DOWNLOAD_RETRIES = 4           # bei socket.timeout / URLError - mit Range-Resume
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1253,24 +1255,79 @@ class OllamaManager(QObject):
                 self._busy = False
 
     def _download(self, url, dest_path):
-        req = urllib.request.Request(url, headers={"User-Agent": "IQspeakr/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            total_str = resp.headers.get("Content-Length") or "0"
+        """Robuster Download mit Range-Resume bei socket.timeout / Verbindungs-
+        abbruch. Bis zu DOWNLOAD_RETRIES Versuche; jeder Versuch bei
+        urlopen mit DOWNLOAD_TIMEOUT-Sekunden Read-Timeout. Wenn der Server
+        Range-Requests unterstuetzt (HTTP 206), wird ab `done` weitergeladen,
+        sonst wird die Datei truncated und neu begonnen."""
+        import socket as _socket
+        max_retries = self.DOWNLOAD_RETRIES
+        timeout = self.DOWNLOAD_TIMEOUT
+        # Status zum Mitziehen ueber Retries.
+        done = 0
+        total = 0
+        last_err = None
+
+        for attempt in range(1, max_retries + 1):
+            headers = {"User-Agent": "IQspeakr/1.0"}
+            if done > 0:
+                headers["Range"] = f"bytes={done}-"
+            req = urllib.request.Request(url, headers=headers)
             try:
-                total = int(total_str)
-            except ValueError:
-                total = 0
-            done = 0
-            with open(dest_path, "wb") as f:
-                self.download_progress.emit(done, total)
-                while True:
-                    chunk = resp.read(self.DOWNLOAD_CHUNK)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    done += len(chunk)
-                    self.download_progress.emit(done, total)
-        log.info(f"OllamaManager: Setup heruntergeladen: {dest_path} ({done} bytes)")
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    status = getattr(resp, "status", 200)
+                    cl_str = resp.headers.get("Content-Length") or "0"
+                    try:
+                        cl = int(cl_str)
+                    except ValueError:
+                        cl = 0
+                    if status == 206 and done > 0:
+                        # Server unterstuetzt Resume - Total = bisheriger
+                        # Fortschritt + restliche Bytes.
+                        if total <= 0:
+                            total = done + cl
+                        mode = "ab"
+                    else:
+                        # Kein Resume - Datei neu beginnen.
+                        if status != 206 and done > 0:
+                            log.warning(
+                                f"OllamaManager: Resume nicht unterstuetzt "
+                                f"(HTTP {status}), starte Download neu."
+                            )
+                        done = 0
+                        total = cl
+                        mode = "wb"
+                    with open(dest_path, mode) as f:
+                        self.download_progress.emit(done, total)
+                        while True:
+                            chunk = resp.read(self.DOWNLOAD_CHUNK)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            done += len(chunk)
+                            self.download_progress.emit(done, total)
+                # Erfolg.
+                log.info(
+                    f"OllamaManager: Setup heruntergeladen: {dest_path} "
+                    f"({done} bytes, Versuch {attempt})"
+                )
+                return
+            except (_socket.timeout, urllib.error.URLError, ConnectionError) as e:
+                last_err = e
+                log.warning(
+                    f"OllamaManager: Download-Versuch {attempt}/{max_retries} "
+                    f"abgebrochen ({type(e).__name__}: {e}). "
+                    f"Bisher {done} bytes, retry in 3s..."
+                )
+                if attempt < max_retries:
+                    self.install_progress.emit(
+                        f"Download abgebrochen, Versuch {attempt + 1}/{max_retries}..."
+                    )
+                    _time.sleep(3.0)
+                continue
+        raise RuntimeError(
+            f"Download nach {max_retries} Versuchen fehlgeschlagen: {last_err}"
+        )
 
     def _run_installer(self, setup_exe):
         # Inno-Setup-Flags - laut https://jrsoftware.org/ishelp/index.php?topic=setupcmdline

@@ -6,7 +6,7 @@
 ; ============================================================
 
 #define AppName        "IQspeakr"
-#define AppVersion     "2.0.0"
+#define AppVersion     "2.0.1"
 #define AppPublisher   "gaetanoficarra"
 #define AppURL         "https://github.com/gaetanoficarrade-lab/iqspeakr"
 #define AppExeName     "IQspeakr.exe"
