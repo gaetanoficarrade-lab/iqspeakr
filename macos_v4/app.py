@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IQspeakr - Lokale Sprache-zu-Text App fuer macOS (v2)
+IQspeakr - Lokale Sprache-zu-Text App für macOS (v2)
 (Qt-basiert: PySide6 QSystemTrayIcon + QWidget-Overlay.)
 
 Portiert aus windows/app.py. Plattform-spezifische Teile (Singleton-Lock,
@@ -10,7 +10,7 @@ mit automatischer MPS-Auswahl (Apple-Silicon-GPU).
 
 import os
 
-# ffmpeg-PATH (openai-whisper braucht ffmpeg fuer manche Dateiformate nicht,
+# ffmpeg-PATH (openai-whisper braucht ffmpeg für manche Dateiformate nicht,
 # wenn wir numpy-Arrays reinreichen — der PATH-Fix hier ist aber trotzdem
 # gut, damit eventuelle Sub-Tools (und Cache-Tools) ffmpeg finden).
 import sys
@@ -48,12 +48,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("IQspeakr")
 # Im --windowed / frozen-Modus ist sys.stderr None; StreamHandler mit None
-# kann sporadische Crashes in Worker-Threads ausloesen.
+# kann sporadische Crashes in Worker-Threads auslösen.
 if not getattr(sys, "frozen", False) and sys.stderr is not None:
     log.addHandler(logging.StreamHandler(sys.stderr))
 
 # faulthandler liefert bei C-Level-Crashes Python-Frame + Thread-Dump.
-# Nuetzlich zur Diagnose von CoreAudio-/Torch-Problemen.
+# Nützlich zur Diagnose von CoreAudio-/Torch-Problemen.
 import faulthandler
 _fh_file = open(str(Path.home() / "IQspeakr.crash.log"), "w", buffering=1)
 faulthandler.enable(file=_fh_file, all_threads=True)
@@ -74,7 +74,7 @@ try:
     except BlockingIOError:
         log.info("IQspeakr laeuft bereits - zweite Instanz beendet sich.")
         sys.exit(0)
-    # Lock erworben - PID reinschreiben (informativ fuer `ps`/Debugging).
+    # Lock erworben - PID reinschreiben (informativ für `ps`/Debugging).
     _lock_fd.write(str(os.getpid()))
     _lock_fd.flush()
 except SystemExit:
@@ -83,10 +83,10 @@ except Exception as _e:
     log.warning(f"Singleton-Check fehlgeschlagen: {_e}")
 
 # =====================================================================
-#  Frueher Splash: MUSS vor den schweren Imports (whisper, torch,
+#  Früher Splash: MUSS vor den schweren Imports (whisper, torch,
 #  sounddevice, pynput) gezeigt werden, weil die zusammen 1-3 Sekunden
 #  brauchen. Ohne diesen Block sieht der User in der Zeit nichts und
-#  denkt, das Doppelklicken haette nicht funktioniert.
+#  denkt, das Doppelklicken hätte nicht funktioniert.
 # =====================================================================
 from PySide6.QtCore import Qt as _Qt, QCoreApplication as _QCoreApplication
 from PySide6.QtWidgets import (
@@ -99,8 +99,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QGuiApplication as _QGuiApplication
 
 # WICHTIG: macOS-Standard von Qt vertauscht in keyEvents physische
-# Ctrl- und Cmd-Tasten (damit "Ctrl+C" plattformuebergreifend funktioniert
-# heisst auf Mac de facto "Cmd+C"). Fuer den Hotkey-Recorder wollen wir
+# Ctrl- und Cmd-Tasten (damit "Ctrl+C" plattformübergreifend funktioniert
+# heißt auf Mac de facto "Cmd+C"). Für den Hotkey-Recorder wollen wir
 # aber die PHYSISCHE Taste sehen (User druckt ctrl -> wir lesen ctrl).
 # Dieses Attribut MUSS vor der QApplication-Erstellung gesetzt werden,
 # sonst wirkt es nicht.
@@ -187,13 +187,13 @@ from pynput.keyboard import Key, KeyCode, Controller
 # =====================================================================
 #  macOS 26+ Fix: pynput ruft TSMGetInputSourceProperty aus seinem
 #  Listener-Thread auf (keycode_context() generator in pynput/_util/
-#  darwin.py:140). macOS 26 enforced main-thread-only fuer TSM/Carbon —
+#  darwin.py:140). macOS 26 enforced main-thread-only für TSM/Carbon —
 #  Listener-Thread crasht mit dispatch_assert_queue_fail.
 #
 #  Fix: wir rufen keycode_context() genau einmal auf dem Main-Thread beim
 #  Import auf und cachen das Ergebnis. Dann monkey-patchen wir pynput,
 #  sodass der Listener-Thread die gecachte Version bekommt. Keyboard-
-#  Layout-Wechsel waehrend der Session werden dadurch ignoriert — fuer
+#  Layout-Wechsel während der Session werden dadurch ignoriert — für
 #  einen Single-Layout-Hotkey-Workflow egal.
 # =====================================================================
 import contextlib as _contextlib
@@ -236,10 +236,10 @@ from PySide6.QtGui import (
 )
 
 # Dock-Icon-Handling: ab v4 hat die App ein Dock-Icon (kein LSUIElement im
-# Info.plist mehr). Ein Klick aufs Dock-Symbol soll das Hauptfenster oeffnen
+# Info.plist mehr). Ein Klick aufs Dock-Symbol soll das Hauptfenster öffnen
 # - das wird via QEvent.ApplicationActivate in IQspeakrApp gemacht. Der
-# NSStatusItem-Tray laeuft als eigener Subprocess und ist von der
-# Activation-Policy unabhaengig.
+# NSStatusItem-Tray läuft als eigener Subprocess und ist von der
+# Activation-Policy unabhängig.
 from PySide6.QtCore import QEvent
 
 # --- Pfade ---
@@ -250,7 +250,7 @@ CONFIG_PATH = os.path.join(USER_DIR, "config.json")
 APP_ICON_PATH = os.path.join(APP_DIR, "IQspeakr.icns")
 
 # Hauptfenster-State (History + Dashboard) liegt im selben User-Dir wie
-# die Config — Mac hat keinen %APPDATA%-Aequivalent, aber ~/IQspeakr ist
+# die Config — Mac hat keinen %APPDATA%-Äquivalent, aber ~/IQspeakr ist
 # genau der "user data"-Spot, den die App eh schon nutzt.
 HISTORY_PATH = os.path.join(USER_DIR, "history.json")
 HISTORY_MAX = 10
@@ -267,7 +267,7 @@ OLLAMA_MAC_DOWNLOAD_URL = "https://ollama.com/download/mac"
 SAMPLE_RATE = 16000
 
 # =====================================================================
-#  Theme-Tokens. Eine Stelle fuer alle Farben - sonst driftet das auseinander.
+#  Theme-Tokens. Eine Stelle für alle Farben - sonst driftet das auseinander.
 #  Identisch mit windows_v2/app.py, damit Mac und Windows gleich aussehen.
 # =====================================================================
 
@@ -293,9 +293,9 @@ THEME_WARNING       = "#F59E0B"
 def apply_app_theme(qapp):
     """Setzt System-Font + globale QSS auf die QApplication. Wird einmal in
     main() aufgerufen, danach erbt jedes Widget davon. Lokale setStyleSheet()-
-    Aufrufe in einzelnen Klassen ergaenzen / spezialisieren."""
-    # SF Pro Display ist macOS-Standard ab Big Sur; auf aelteren Macs faellt
-    # Qt automatisch auf SF Pro Text bzw. Helvetica Neue zurueck.
+    Aufrufe in einzelnen Klassen ergänzen / spezialisieren."""
+    # SF Pro Display ist macOS-Standard ab Big Sur; auf älteren Macs fällt
+    # Qt automatisch auf SF Pro Text bzw. Helvetica Neue zurück.
     from PySide6.QtGui import QFont as _QF
     font = _QF(".AppleSystemUIFont")  # systemFont alias
     font.setPointSizeF(13.0)
@@ -558,7 +558,7 @@ _LUCIDE_INFO = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
 
 
 def _make_app_logo_pixmap(size=28):
-    """Indigo-Quadrat (abgerundet) + weisses Mikrofon-Symbol als Pixmap.
+    """Indigo-Quadrat (abgerundet) + weißes Mikrofon-Symbol als Pixmap.
     Wird im Sidebar-Header verwendet — die `.icns`-Datei brauchen wir hier
     nicht, das Logo soll konsistent zum Theme-Akzent rendern."""
     from PySide6.QtSvg import QSvgRenderer
@@ -572,7 +572,7 @@ def _make_app_logo_pixmap(size=28):
     p.setPen(Qt.NoPen)
     radius = max(4, size // 5)
     p.drawRoundedRect(0, 0, size, size, radius, radius)
-    # Weisses Mikrofon-Symbol mittig - 60% des Quadrats
+    # Weißes Mikrofon-Symbol mittig - 60% des Quadrats
     icon_size = int(size * 0.62)
     icon_x = (size - icon_size) // 2
     icon_y = (size - icon_size) // 2
@@ -610,25 +610,25 @@ class PillOverlay(QWidget):
     """Always-on-top Pill mit 7 Live-Waveform-Balken unten-mittig.
     Audio-Thread schreibt nur atomische Python-Attribute (thread-safe in
     CPython), der QTimer im Main-Thread liest sie - keine Cross-Thread
-    Qt-Signals aus C-Callbacks noetig (vermeidet Stack-Races unter
+    Qt-Signals aus C-Callbacks nötig (vermeidet Stack-Races unter
     Whisper/Torch-Parallelbetrieb)."""
 
     BAR_COUNT = 7
     W = 180
     H = 36
     # Overlay ist IMMER sichtbar. Im Idle dezent (niedrige Opacity),
-    # waehrend Aufnahme kraeftig. Der User wollte kein Auftauchen/
+    # während Aufnahme kräftig. Der User wollte kein Auftauchen/
     # Verschwinden-Blitz, sondern eine ruhige dauerhafte Anwesenheit.
     IDLE_ALPHA = 0.22       # dezent, aber sichtbar
-    ACTIVE_ALPHA = 0.92     # deutlich, waehrend Aufnahme
+    ACTIVE_ALPHA = 0.92     # deutlich, während Aufnahme
     # Abstand zum unteren Bildschirmrand. availableGeometry() respektiert
-    # Dock+Menubar — 16px darueber sind genug, sonst schwebt die Pille zu hoch.
+    # Dock+Menubar — 16px darüber sind genug, sonst schwebt die Pille zu hoch.
     MARGIN_BOTTOM = 16
 
     def __init__(self, enabled=True):
         # Qt.Tool + WindowStaysOnTop + FramelessWindowHint ist die robuste
-        # Mac-Kombi fuer ein Overlay-Widget. WindowDoesNotAcceptFocus
-        # sorgt dafuer, dass das aktive Fenster des Users nicht deaktiviert
+        # Mac-Kombi für ein Overlay-Widget. WindowDoesNotAcceptFocus
+        # sorgt dafür, dass das aktive Fenster des Users nicht deaktiviert
         # wird wenn das Overlay erscheint.
         super().__init__(
             None,
@@ -640,7 +640,7 @@ class PillOverlay(QWidget):
         self._active = False
         self._current_alpha = 0.0
         self._target_alpha = self.IDLE_ALPHA
-        self._idle_phase = 0.0  # fuer das dezente Idle-Atmen
+        self._idle_phase = 0.0  # für das dezente Idle-Atmen
 
         if not enabled:
             log.info("PillOverlay: deaktiviert (config.overlay_enabled=false)")
@@ -655,7 +655,7 @@ class PillOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(40)  # ~25 fps
         self._timer.timeout.connect(self._tick)
-        # Timer laeuft nur waehrend Aufnahme — im Idle nichts zu animieren.
+        # Timer läuft nur während Aufnahme — im Idle nichts zu animieren.
 
         # Initial unsichtbar. Overlay erscheint erst bei set_recording(True)
         # und verschwindet wieder bei set_recording(False).
@@ -673,7 +673,7 @@ class PillOverlay(QWidget):
                 NSWindowCollectionBehaviorIgnoresCycle,
             )
             # winId() liefert unter Qt/macOS einen Pointer auf das NSView.
-            # Via objc.objc_object(c_void_p=...) zurueck in ein Python-Objekt
+            # Via objc.objc_object(c_void_p=...) zurück in ein Python-Objekt
             # wandeln und .window() aufrufen.
             view = objc.objc_object(c_void_p=int(self.winId()))
             nswin = view.window()
@@ -703,7 +703,7 @@ class PillOverlay(QWidget):
             log.warning(f"PillOverlay: primaryScreen() Fehler: {e}")
 
     def _tick(self):
-        # Laeuft nur waehrend Aufnahme. Opacity auf Active-Level faden,
+        # Läuft nur während Aufnahme. Opacity auf Active-Level faden,
         # Balken decay.
         diff = self._target_alpha - self._current_alpha
         if abs(diff) > 0.005:
@@ -721,7 +721,7 @@ class PillOverlay(QWidget):
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(0, 0, self.W, self.H, self.H // 2, self.H // 2)
 
-        # 7 weisse Balken in der Mitte
+        # 7 weiße Balken in der Mitte
         bar_w = 3
         bar_gap = 4
         total = self.BAR_COUNT * bar_w + (self.BAR_COUNT - 1) * bar_gap
@@ -737,14 +737,14 @@ class PillOverlay(QWidget):
             p.drawRoundedRect(x1, y1, bar_w, bar_h, 1.5, 1.5)
         p.end()
 
-    # API fuer Audio-Thread: nur atomische Attribut-Zuweisung
+    # API für Audio-Thread: nur atomische Attribut-Zuweisung
     # (in CPython thread-safe). Das Tick im Main-Thread liest.
     def set_levels(self, levels):
         if self.enabled:
             self._levels = list(levels)
 
     def set_recording(self, on):
-        """Main-Thread-only. Overlay nur waehrend Aufnahme sichtbar,
+        """Main-Thread-only. Overlay nur während Aufnahme sichtbar,
         sonst versteckt. Kein Idle-Zustand mehr."""
         if not self.enabled:
             return
@@ -801,7 +801,7 @@ HOTKEY_DISPLAY = {
     "tab": "Tab",
 }
 
-# Qt-Key -> interner Hotkey-String (fuer Custom-Hotkey-Recorder)
+# Qt-Key -> interner Hotkey-String (für Custom-Hotkey-Recorder)
 _QT_MOD_TO_NAME = {
     Qt.Key_Control: "ctrl",
     Qt.Key_Shift:   "shift",
@@ -847,7 +847,7 @@ def hotkey_display(hotkey_str):
         if part in HOTKEY_DISPLAY:
             display_parts.append(HOTKEY_DISPLAY[part])
             # Unicode-Modifier-Symbole sind single-char; "Leertaste"/"Eingabe"
-            # sind Worte. Der Join haengt davon ab, ob nur Symbole im Spiel
+            # sind Worte. Der Join hängt davon ab, ob nur Symbole im Spiel
             # sind.
             if part in ("ctrl", "control", "shift", "alt", "option",
                         "cmd", "command", "win"):
@@ -869,9 +869,9 @@ def _hotkey_is_single_modifier(hotkey_str):
 
 
 def _hotkey_is_all_modifiers(hotkey_str):
-    """True wenn die Kombi ausschliesslich aus Modifiern besteht (z.B. 'ctrl',
+    """True wenn die Kombi ausschließlich aus Modifiern besteht (z.B. 'ctrl',
     'ctrl+shift'). Nur dann sind Hold/Tap/Double-Tap sinnvoll - bei Kombis mit
-    Buchstaben oder F-Tasten gibt's naemlich keine klare 'lang gehalten'-Semantik."""
+    Buchstaben oder F-Tasten gibt's nämlich keine klare 'lang gehalten'-Semantik."""
     parts = [p.strip() for p in hotkey_str.lower().split("+") if p.strip()]
     if not parts:
         return False
@@ -892,18 +892,18 @@ DEFAULT_CONFIG = {
     "cleanup_enabled": True,
     "language": "de",
     "overlay_enabled": True,
-    # Master-Switch fuer die Ollama-Integration. True = Default (App
-    # versucht Ollama zu detecten und nutzt es fuer Cleanup). False = User
+    # Master-Switch für die Ollama-Integration. True = Default (App
+    # versucht Ollama zu detecten und nutzt es für Cleanup). False = User
     # hat in den Settings explizit "Ollama deaktivieren" geklickt.
     "ollama_disabled": False,
     # Fenster-Geometrie wird beim Resize debounced persistiert. Default
-    # 1280x900 sorgt dafuer, dass die Style-Cards in 4er-Reihe sichtbar
+    # 1280x900 sorgt dafür, dass die Style-Cards in 4er-Reihe sichtbar
     # sind und die Settings-Card nicht von der Heatmap zerquetscht wird.
     "window_width": 1280,
     "window_height": 900,
     # Cleanup-Prompt-Stil: formal | locker | sehr_locker | custom.
     # StyleView in der App schreibt das Feld; Default = locker (= das
-    # Verhalten der Vorgaenger-Version).
+    # Verhalten der Vorgänger-Version).
     "style": "locker",
     # Wird nur ausgewertet wenn style == "custom".
     "style_custom": {
@@ -939,59 +939,59 @@ def save_config(config):
 CLEANUP_PROMPT_LOCKER = """Du bereinigst gesprochene Sprache minimal-invasiv. WICHTIG: Du DARFST den Text NICHT umformulieren oder paraphrasieren. Der Sprecher soll seinen eigenen Stil wiedererkennen.
 
 ERLAUBT:
-- Fuellwoerter entfernen (aehm, aeh, also, sozusagen, halt, quasi, irgendwie, eben, ja, nun)
+- Füllwörter entfernen (ähm, äh, also, sozusagen, halt, quasi, irgendwie, eben, ja, nun)
 - Wortdoppelungen und Stotterer entfernen (z.B. "ich ich habe" -> "ich habe")
-- Satzzeichen und Grossschreibung korrigieren
+- Satzzeichen und Großschreibung korrigieren
 - Offensichtliche Grammatikfehler korrigieren (z.B. falsche Artikel, Kasus)
 - Kleine Satzumstellungen NUR wenn grammatikalisch notwendig
 
 VERBOTEN:
-- Woerter durch Synonyme ersetzen
-- Saetze neu formulieren oder glaetten
+- Wörter durch Synonyme ersetzen
+- Sätze neu formulieren oder glätten
 - Inhalt straffen oder zusammenfassen
-- Stil veraendern (umgangssprachlich -> schriftsprachlich)
-- Eigene Woerter hinzufuegen
+- Stil verändern (umgangssprachlich -> schriftsprachlich)
+- Eigene Wörter hinzufügen
 
-Antworte NUR mit dem bereinigten Text, ohne Erklaerungen, ohne Anfuehrungszeichen.
+Antworte NUR mit dem bereinigten Text, ohne Erklärungen, ohne Anführungszeichen.
 
 Text: {text}"""
 
-CLEANUP_PROMPT_FORMAL = """Du bereinigst gesprochene Sprache und ueberfuehrst sie in geschriebenes, foermliches Deutsch. Der Inhalt bleibt vollstaendig erhalten - nur Form und Register werden angehoben.
+CLEANUP_PROMPT_FORMAL = """Du bereinigst gesprochene Sprache und überführst sie in geschriebenes, förmliches Deutsch. Der Inhalt bleibt vollständig erhalten - nur Form und Register werden angehoben.
 
 ERLAUBT:
-- Fuellwoerter, Wortdoppelungen und Stotterer entfernen
-- Satzzeichen, Grossschreibung und Grammatik korrigieren
-- Umgangssprache durch schriftsprachliche Aequivalente ersetzen (z.B. "halt" -> entfernen, "kriegen" -> "erhalten", "ne" -> "eine")
-- Saetze umstellen, wenn der Schriftstil das verlangt
-- Hoeflichkeitsformen verwenden, wenn aus dem Kontext klar erkennbar
-- Verkuerzungen ausschreiben (z.B. "geht's" -> "geht es", "ist's" -> "ist es")
+- Füllwörter, Wortdoppelungen und Stotterer entfernen
+- Satzzeichen, Großschreibung und Grammatik korrigieren
+- Umgangssprache durch schriftsprachliche Äquivalente ersetzen (z.B. "halt" -> entfernen, "kriegen" -> "erhalten", "ne" -> "eine")
+- Sätze umstellen, wenn der Schriftstil das verlangt
+- Höflichkeitsformen verwenden, wenn aus dem Kontext klar erkennbar
+- Verkürzungen ausschreiben (z.B. "geht's" -> "geht es", "ist's" -> "ist es")
 
 VERBOTEN:
 - Inhalt streichen oder zusammenfassen
-- Eigene Aussagen hinzufuegen
-- Inhaltliche Aussage veraendern
+- Eigene Aussagen hinzufügen
+- Inhaltliche Aussage verändern
 
-Antworte NUR mit dem bereinigten Text, ohne Erklaerungen, ohne Anfuehrungszeichen.
+Antworte NUR mit dem bereinigten Text, ohne Erklärungen, ohne Anführungszeichen.
 
 Text: {text}"""
 
-CLEANUP_PROMPT_SEHR_LOCKER = """Du entfernst nur Spracharten der Pause aus diktierter Sprache. Sonst NICHTS. Der Sprecher will seinen Originaltext exakt 1:1 zurueck, nur ohne Stotterer.
+CLEANUP_PROMPT_SEHR_LOCKER = """Du entfernst nur Spracharten der Pause aus diktierter Sprache. Sonst NICHTS. Der Sprecher will seinen Originaltext exakt 1:1 zurück, nur ohne Stotterer.
 
 ERLAUBT (und nur das):
-- Reine Fuelllaute entfernen: "aehm", "aeh", "oeh", "mhm"
+- Reine Fülllaute entfernen: "ähm", "äh", "öh", "mhm"
 - Direkte Wortdoppelungen entfernen, wenn klar ein Stotterer ist (z.B. "ich ich habe" -> "ich habe", aber NICHT "sehr sehr gut")
 - Offensichtliche Satzzeichen am Satzende setzen (Punkt, Fragezeichen)
 
 VERBOTEN:
 - Grammatik korrigieren
-- Umgangssprache aendern
+- Umgangssprache ändern
 - Wortdoppelungen entfernen, die zur Betonung dienen
-- Gross-/Kleinschreibung anders setzen als im Original (ausser am Satzanfang)
+- Groß-/Kleinschreibung anders setzen als im Original (außer am Satzanfang)
 - Satzumstellungen
 - Synonyme einsetzen
-- Fuellwoerter wie "halt", "also", "quasi" entfernen - die sind Stil
+- Füllwörter wie "halt", "also", "quasi" entfernen - die sind Stil
 
-Antworte NUR mit dem unveraenderten Text minus Fuelllaute, ohne Erklaerungen, ohne Anfuehrungszeichen.
+Antworte NUR mit dem unveränderten Text minus Fülllaute, ohne Erklärungen, ohne Anführungszeichen.
 
 Text: {text}"""
 
@@ -999,16 +999,16 @@ Text: {text}"""
 CLEANUP_PROMPT = CLEANUP_PROMPT_LOCKER
 
 # Default-Beispiel im "Eigene Anweisungen"-Feld der Individuell-Karte.
-CUSTOM_PROMPT_EXAMPLE = """Achte besonders auf Fachbegriffe aus der IT (z.B. "API", "Repository", "Pull Request"). Schreibe diese englischen Begriffe NICHT klein, auch wenn sie im Satzinneren stehen. Behalte du/Sie-Anrede so wie diktiert. Wenn ich eine Aufzaehlung mache, formatiere sie als Bulletpoints."""
+CUSTOM_PROMPT_EXAMPLE = """Achte besonders auf Fachbegriffe aus der IT (z.B. "API", "Repository", "Pull Request"). Schreibe diese englischen Begriffe NICHT klein, auch wenn sie im Satzinneren stehen. Behalte du/Sie-Anrede so wie diktiert. Wenn ich eine Aufzählung mache, formatiere sie als Bulletpoints."""
 
-# Reihenfolge + Labels fuer die Individuell-Checkboxen. Key matched config.
+# Reihenfolge + Labels für die Individuell-Checkboxen. Key matched config.
 CUSTOM_OPTIONS = [
-    ("filler",     "Fuellwoerter entfernen (aehm, aeh, halt, quasi)"),
+    ("filler",     "Füllwörter entfernen (ähm, äh, halt, quasi)"),
     ("repeats",    "Wortdoppelungen / Stotterer entfernen"),
-    ("punct",      "Satzzeichen und Grossschreibung korrigieren"),
+    ("punct",      "Satzzeichen und Großschreibung korrigieren"),
     ("grammar",    "Offensichtliche Grammatikfehler korrigieren"),
-    ("reorder",    "Satzumstellungen erlauben (wenn noetig)"),
-    ("formalize",  "Umgangssprache in Schriftsprache ueberfuehren"),
+    ("reorder",    "Satzumstellungen erlauben (wenn nötig)"),
+    ("formalize",  "Umgangssprache in Schriftsprache überführen"),
 ]
 
 
@@ -1018,28 +1018,28 @@ def build_custom_prompt(checkboxes, extra_prompt):
     rules_allowed = []
     rules_forbidden = []
     if checkboxes.get("filler"):
-        rules_allowed.append("- Fuellwoerter entfernen (aehm, aeh, also, sozusagen, halt, quasi, irgendwie, eben, ja, nun)")
+        rules_allowed.append("- Füllwörter entfernen (ähm, äh, also, sozusagen, halt, quasi, irgendwie, eben, ja, nun)")
     else:
-        rules_forbidden.append("- Fuellwoerter entfernen (sie sind Stil)")
+        rules_forbidden.append("- Füllwörter entfernen (sie sind Stil)")
     if checkboxes.get("repeats"):
         rules_allowed.append("- Wortdoppelungen und Stotterer entfernen")
     if checkboxes.get("punct"):
-        rules_allowed.append("- Satzzeichen und Grossschreibung korrigieren")
+        rules_allowed.append("- Satzzeichen und Großschreibung korrigieren")
     if checkboxes.get("grammar"):
         rules_allowed.append("- Offensichtliche Grammatikfehler korrigieren")
     if checkboxes.get("reorder"):
-        rules_allowed.append("- Saetze umstellen, wenn grammatikalisch oder stilistisch noetig")
+        rules_allowed.append("- Sätze umstellen, wenn grammatikalisch oder stilistisch nötig")
     else:
-        rules_forbidden.append("- Saetze umstellen oder umformulieren")
+        rules_forbidden.append("- Sätze umstellen oder umformulieren")
     if checkboxes.get("formalize"):
-        rules_allowed.append("- Umgangssprache durch schriftsprachliche Aequivalente ersetzen")
+        rules_allowed.append("- Umgangssprache durch schriftsprachliche Äquivalente ersetzen")
     else:
-        rules_forbidden.append("- Stil veraendern (umgangssprachlich -> schriftsprachlich)")
+        rules_forbidden.append("- Stil verändern (umgangssprachlich -> schriftsprachlich)")
     # Immer verboten:
     rules_forbidden.append("- Inhalt streichen oder zusammenfassen")
-    rules_forbidden.append("- Eigene Aussagen hinzufuegen")
+    rules_forbidden.append("- Eigene Aussagen hinzufügen")
 
-    parts = ["Du bereinigst gesprochene Sprache nach den folgenden Regeln. Inhaltlich nichts hinzufuegen oder entfernen.\n"]
+    parts = ["Du bereinigst gesprochene Sprache nach den folgenden Regeln. Inhaltlich nichts hinzufügen oder entfernen.\n"]
     if rules_allowed:
         parts.append("ERLAUBT:")
         parts.extend(rules_allowed)
@@ -1053,7 +1053,7 @@ def build_custom_prompt(checkboxes, extra_prompt):
         parts.append("ZUSAETZLICHE ANWEISUNGEN:")
         parts.append(extra)
         parts.append("")
-    parts.append("Antworte NUR mit dem bereinigten Text, ohne Erklaerungen, ohne Anfuehrungszeichen.")
+    parts.append("Antworte NUR mit dem bereinigten Text, ohne Erklärungen, ohne Anführungszeichen.")
     parts.append("")
     parts.append("Text: {text}")
     return "\n".join(parts)
@@ -1078,7 +1078,7 @@ def get_cleanup_prompt(config):
 # Beispieltext der in der Style-View den Vorher/Nachher-Effekt zeigt.
 STYLE_SAMPLE_INPUT = "ähm also ich wollte nur kurz sagen dass das ja eigentlich ganz gut funktioniert halt"
 STYLE_SAMPLE_OUTPUTS = {
-    "formal":      "Ich moechte kurz mitteilen, dass dies grundsaetzlich gut funktioniert.",
+    "formal":      "Ich möchte kurz mitteilen, dass dies grundsätzlich gut funktioniert.",
     "locker":      "Ich wollte nur kurz sagen, dass das eigentlich ganz gut funktioniert.",
     "sehr_locker": "Also ich wollte nur kurz sagen, dass das ja eigentlich ganz gut funktioniert halt.",
     "custom":      "(Eigene Anweisungen + Checkboxen bestimmen das Ergebnis.)",
@@ -1086,9 +1086,9 @@ STYLE_SAMPLE_OUTPUTS = {
 
 
 class HistoryStore(QObject):
-    """Einfacher JSON-FIFO-Store fuer die letzten HISTORY_MAX Transkripte.
+    """Einfacher JSON-FIFO-Store für die letzten HISTORY_MAX Transkripte.
     Schreibt %APPDATA%\\IQspeakr\\history.json. Emit changed() nach add()
-    damit angeschlossene Views (HomeView) sich aktualisieren - ueber Qt-
+    damit angeschlossene Views (HomeView) sich aktualisieren - über Qt-
     Signal, da add() aus dem Audio/Whisper-Thread aufgerufen wird."""
 
     changed = Signal()
@@ -1118,7 +1118,7 @@ class HistoryStore(QObject):
 
     def items(self):
         # Defensive Kopie, damit Aufrufer die Liste nicht aus Versehen
-        # mutieren waehrend der Audio-Thread schreibt.
+        # mutieren während der Audio-Thread schreibt.
         return list(self._items)
 
     def add(self, text):
@@ -1143,11 +1143,11 @@ class HistoryStore(QObject):
 
 
 # =====================================================================
-#  Stats-Store: SQLite-basierter, append-only Speicher fuer das Dashboard.
+#  Stats-Store: SQLite-basierter, append-only Speicher für das Dashboard.
 #  - Pro Aufnahme ein Row (timestamp, word_count, duration_sec).
-#  - Liegt unabhaengig von der 10er-History in stats.db.
+#  - Liegt unabhängig von der 10er-History in stats.db.
 #  - duration_sec=0 bedeutet "Dauer unbekannt" (z.B. migrierte
-#    History-Eintraege) und wird in WPM-Berechnung ausgeschlossen.
+#    History-Einträge) und wird in WPM-Berechnung ausgeschlossen.
 # =====================================================================
 
 class StatsStore(QObject):
@@ -1159,8 +1159,8 @@ class StatsStore(QObject):
         self._lock = threading.Lock()
         os.makedirs(USER_DIR, exist_ok=True)
         # check_same_thread=False, weil record() aus dem Audio-/Whisper-
-        # Worker-Thread aufgerufen wird. Wir serialisieren manuell ueber
-        # _lock - das reicht fuer unseren append-dominanten Workload.
+        # Worker-Thread aufgerufen wird. Wir serialisieren manuell über
+        # _lock - das reicht für unseren append-dominanten Workload.
         self._conn = sqlite3.connect(STATS_DB_PATH, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._ensure_schema()
@@ -1205,8 +1205,8 @@ class StatsStore(QObject):
         return int(row["s"] if row else 0)
 
     def avg_wpm(self):
-        """Wörter pro Minute über alle Eintraege mit duration_sec > 0.
-        Liefert None wenn keine Eintraege mit Dauer existieren."""
+        """Wörter pro Minute über alle Einträge mit duration_sec > 0.
+        Liefert None wenn keine Einträge mit Dauer existieren."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT COALESCE(SUM(word_count), 0) AS w, COALESCE(SUM(duration_sec), 0) AS d "
@@ -1219,7 +1219,7 @@ class StatsStore(QObject):
         return words / (secs / 60.0)
 
     def daily_counts(self, days_back):
-        """Liefert dict[date] -> int fuer die letzten `days_back` Tage,
+        """Liefert dict[date] -> int für die letzten `days_back` Tage,
         inkl. heute. Tage ohne Eintrag fehlen im Dict."""
         cutoff = int((datetime.now() - timedelta(days=days_back - 1)).replace(
             hour=0, minute=0, second=0, microsecond=0
@@ -1236,7 +1236,7 @@ class StatsStore(QObject):
         return out
 
     def all_active_days(self):
-        """Set aller Tage mit mindestens einem Eintrag, ueber die ganze DB."""
+        """Set aller Tage mit mindestens einem Eintrag, über die ganze DB."""
         with self._lock:
             rows = self._conn.execute("SELECT DISTINCT ts FROM stats").fetchall()
         return {date.fromtimestamp(int(r["ts"])) for r in rows}
@@ -1273,9 +1273,9 @@ class StatsStore(QObject):
         return longest
 
     def import_legacy_history(self, history_items):
-        """Einmalig beim ersten Start: alte history.json-Eintraege in die
+        """Einmalig beim ersten Start: alte history.json-Einträge in die
         DB einspielen, damit das Dashboard sofort etwas zu zeigen hat.
-        Macht nichts wenn die DB schon Eintraege hat."""
+        Macht nichts wenn die DB schon Einträge hat."""
         if not self.is_empty():
             return 0
         n = 0
@@ -1299,19 +1299,19 @@ class StatsStore(QObject):
 
 
 # =====================================================================
-#  Ollama-Manager (macOS-Variante): State-Maschine + Worker fuer
+#  Ollama-Manager (macOS-Variante): State-Maschine + Worker für
 #  Detection / User-getriebenen Install / Pull.
-#  Auf dem Mac wird Ollama nicht silent installiert - der User laedt die
+#  Auf dem Mac wird Ollama nicht silent installiert - der User lädt die
 #  Ollama.app von ollama.com und zieht sie selbst nach /Applications.
-#  Wir oeffnen ihm die Download-URL und warten dann auf den Service.
+#  Wir öffnen ihm die Download-URL und warten dann auf den Service.
 # =====================================================================
 
 # State-Konstanten - kein Enum, damit die Werte direkt in die Config
-# / Logs / UI-Strings wandern koennen ohne .name/.value-Indirektion.
+# / Logs / UI-Strings wandern können ohne .name/.value-Indirektion.
 OLLAMA_NOT_INSTALLED      = "not_installed"
 OLLAMA_WAITING_FOR_USER   = "waiting_for_user"
 # Ollama-Service ist erreichbar, aber das Wunsch-Modell ist noch nicht
-# heruntergeladen. Der User muss den Pull manuell ausloesen — sonst weiss
+# heruntergeladen. Der User muss den Pull manuell auslösen — sonst weiß
 # er nicht, dass jetzt ein 2-4 GB Download startet.
 OLLAMA_NEEDS_MODEL        = "needs_model"
 OLLAMA_PULLING            = "pulling_model"
@@ -1319,15 +1319,15 @@ OLLAMA_READY              = "ready"
 OLLAMA_ERROR              = "error"
 # User hat die ganze Integration ausgeschaltet (Master-Switch). Persistiert
 # in config.ollama_disabled. Im DISABLED-State wird kein Service gepingt,
-# Cleanup laeuft nicht, Style ist gesperrt.
+# Cleanup läuft nicht, Style ist gesperrt.
 OLLAMA_DISABLED           = "disabled"
 
-# Modell-Optionen fuer den Setup-Dropdown. Reihenfolge = UI-Reihenfolge.
+# Modell-Optionen für den Setup-Dropdown. Reihenfolge = UI-Reihenfolge.
 OLLAMA_MODEL_OPTIONS = [
     ("llama3.2",  "llama3.2 (3B) - klein und schnell, Standard"),
-    ("llama3.1",  "llama3.1 (8B) - bessere Qualitaet, mehr RAM"),
-    ("mistral",   "mistral (7B) - gut fuer Deutsch und Englisch"),
-    ("gemma2",    "gemma2 (9B) - Google, solide Qualitaet"),
+    ("llama3.1",  "llama3.1 (8B) - bessere Qualität, mehr RAM"),
+    ("mistral",   "mistral (7B) - gut für Deutsch und Englisch"),
+    ("gemma2",    "gemma2 (9B) - Google, solide Qualität"),
     ("phi3",      "phi3 (3.8B) - Microsoft, kompakt und gut"),
 ]
 
@@ -1340,13 +1340,13 @@ class _PullCancelled(Exception):
 class OllamaManager(QObject):
     """Steuert Detection / Install / Pull des Ollama-Service auf macOS.
 
-    Auf dem Mac gibt es keinen Silent-Installer-Pfad - der User laedt sich
-    die Ollama.app selbst herunter. Dieser Manager oeffnet ihm die Seite
+    Auf dem Mac gibt es keinen Silent-Installer-Pfad - der User lädt sich
+    die Ollama.app selbst herunter. Dieser Manager öffnet ihm die Seite
     im Browser und wartet dann (in einem Worker-Thread) bis der Service
-    erreichbar ist, um danach das gewuenschte Modell zu pullen.
+    erreichbar ist, um danach das gewünschte Modell zu pullen.
 
-    Alle Worker laufen in eigenen Threads, GUI-Updates ausschliesslich
-    ueber Qt-Signals (queued, automatisch im Main-Thread)."""
+    Alle Worker laufen in eigenen Threads, GUI-Updates ausschließlich
+    über Qt-Signals (queued, automatisch im Main-Thread)."""
 
     state_changed = Signal(str)             # neuer State-String
     pull_progress = Signal(int, str)        # percent 0-100, Status-Text
@@ -1356,7 +1356,7 @@ class OllamaManager(QObject):
     SERVICE_WAIT_SECONDS = 60     # Watch-Worker wartet bis 30 min, aber
                                   # einzelne Ping-Schleifen orientieren
                                   # sich an diesem Wert.
-    USER_INSTALL_TIMEOUT = 30 * 60   # 30 Minuten Geduld fuer den User
+    USER_INSTALL_TIMEOUT = 30 * 60   # 30 Minuten Geduld für den User
     USER_INSTALL_POLL = 5            # Sekunden zwischen Ping-Versuchen
 
     def __init__(self, parent=None):
@@ -1365,10 +1365,10 @@ class OllamaManager(QObject):
         self._busy = False  # serialisiert Install/Pull
         self._lock = threading.Lock()
         # Wird vom User gesetzt um WAITING_FOR_USER abzubrechen.
-        # Watch-Thread prueft das Flag in der Ping-Schleife.
+        # Watch-Thread prüft das Flag in der Ping-Schleife.
         self._cancel_install = False
         # Wird vom User gesetzt um einen laufenden Modell-Pull
-        # abzubrechen. Pull-Worker prueft das Flag im Chunk-Read-Loop.
+        # abzubrechen. Pull-Worker prüft das Flag im Chunk-Read-Loop.
         self._cancel_pull = False
 
     # --- State ---
@@ -1404,12 +1404,12 @@ class OllamaManager(QObject):
 
     def refresh_state(self, current_model=None):
         """Asynchroner Re-Check des Ollama-Status. Wird beim App-Start und
-        nach Konfig-Aenderungen aufgerufen. current_model: das in config
-        eingestellte Modell - wenn vorhanden + Service laeuft -> READY.
+        nach Konfig-Änderungen aufgerufen. current_model: das in config
+        eingestellte Modell - wenn vorhanden + Service läuft -> READY.
 
         Wenn der User die Integration in den Settings deaktiviert hat
         (state == OLLAMA_DISABLED), pingen wir gar nicht erst - sonst
-        ueberschreibt der Worker den User-Wunsch."""
+        überschreibt der Worker den User-Wunsch."""
         if self._state == OLLAMA_DISABLED:
             return
         threading.Thread(
@@ -1422,7 +1422,7 @@ class OllamaManager(QObject):
         """User-Klick: Ollama-Integration aus. Etwaige laufende Worker
         werden via Cancel-Flags beendet, dann setzen wir den finalen
         State auf DISABLED. config.ollama_disabled wird vom Caller
-        persistiert (wir koennen hier nicht config schreiben, der
+        persistiert (wir können hier nicht config schreiben, der
         Manager kennt die config nicht)."""
         log.info("OllamaManager: User hat Integration deaktiviert")
         self._cancel_install = True
@@ -1430,8 +1430,8 @@ class OllamaManager(QObject):
         self._set_state(OLLAMA_DISABLED)
 
     def enable_integration(self, current_model=None):
-        """User-Klick: Ollama-Integration wieder an. Zurueck zu Detection-
-        Flow ueber refresh_state."""
+        """User-Klick: Ollama-Integration wieder an. Zurück zu Detection-
+        Flow über refresh_state."""
         log.info("OllamaManager: User hat Integration aktiviert")
         # Direkt aus DISABLED rausspringen, sonst skippt refresh_state.
         self._state = OLLAMA_NOT_INSTALLED
@@ -1442,12 +1442,12 @@ class OllamaManager(QObject):
         ok, models = self._ping_service()
         if not ok:
             # Auf macOS starten wir keinen `ollama serve` Subprozess - die
-            # Ollama.app uebernimmt das selbst, sobald der User sie startet.
+            # Ollama.app übernimmt das selbst, sobald der User sie startet.
             self._set_state(OLLAMA_NOT_INSTALLED)
             return
-        # Service laeuft. Pruefe ob das eingestellte Modell schon gepullt
+        # Service läuft. Prüfe ob das eingestellte Modell schon gepullt
         # ist - wenn nicht, NEEDS_MODEL (User triggert Pull manuell), sonst
-        # READY. Vermeidet ueberraschende 2-4 GB Downloads beim App-Start.
+        # READY. Vermeidet überraschende 2-4 GB Downloads beim App-Start.
         if current_model:
             prefixes = [current_model, current_model + ":"]
             if any(any(m.startswith(p) for p in prefixes) for m in models):
@@ -1455,26 +1455,26 @@ class OllamaManager(QObject):
                 return
             self._set_state(OLLAMA_NEEDS_MODEL)
             return
-        # Kein Modell-Name uebergeben - default optimistisch READY.
+        # Kein Modell-Name übergeben - default optimistisch READY.
         self._set_state(OLLAMA_READY)
 
     def has_model(self, name):
-        """Prueft synchron ob ein Modell schon gepullt ist."""
+        """Prüft synchron ob ein Modell schon gepullt ist."""
         ok, models = self._ping_service()
         if not ok:
             return False
-        # Modelle koennen mit ":latest" o.ae. ankommen.
+        # Modelle können mit ":latest" o.ae. ankommen.
         prefixes = [name, name + ":"]
         return any(any(m.startswith(p) for p in prefixes) for m in models)
 
     # --- Install (macOS: User-getrieben) ---
     def install(self, model_name):
-        """Oeffnet ollama.com im Browser und wartet im Hintergrund, bis
+        """Öffnet ollama.com im Browser und wartet im Hintergrund, bis
         der Service erreichbar ist. Modell wird NICHT automatisch gezogen
-        - dafuer gibt's start_pull(), das der User explizit anstoesst."""
+        - dafür gibt's start_pull(), das der User explizit anstößt."""
         with self._lock:
             if self._busy:
-                self.error_message.emit("Eine andere Aktion laeuft bereits.")
+                self.error_message.emit("Eine andere Aktion läuft bereits.")
                 return
             self._busy = True
             self._cancel_install = False
@@ -1483,7 +1483,7 @@ class OllamaManager(QObject):
             subprocess.Popen(["open", OLLAMA_MAC_DOWNLOAD_URL])
         except Exception as e:
             log.warning(f"OllamaManager: konnte Download-URL nicht oeffnen: {e}")
-            # Trotzdem in den Wait-State - User kann die URL manuell oeffnen.
+            # Trotzdem in den Wait-State - User kann die URL manuell öffnen.
         self._set_state(OLLAMA_WAITING_FOR_USER)
         threading.Thread(
             target=self._wait_for_user_install_worker,
@@ -1492,8 +1492,8 @@ class OllamaManager(QObject):
         ).start()
 
     def cancel_install(self):
-        """Bricht das Warten auf den Ollama-Service ab. Watch-Thread prueft
-        das Flag in der Ping-Schleife und kehrt zu NOT_INSTALLED zurueck."""
+        """Bricht das Warten auf den Ollama-Service ab. Watch-Thread prüft
+        das Flag in der Ping-Schleife und kehrt zu NOT_INSTALLED zurück."""
         log.info("OllamaManager: User hat Install abgebrochen")
         self._cancel_install = True
 
@@ -1501,7 +1501,7 @@ class OllamaManager(QObject):
         """Pingt alle USER_INSTALL_POLL Sekunden den Ollama-Service.
         Sobald erreichbar -> NEEDS_MODEL (oder READY wenn Modell schon da).
         Modell wird NICHT automatisch gezogen, der User muss start_pull()
-        explizit triggern. Bei Timeout/Cancel zurueck nach NOT_INSTALLED.
+        explizit triggern. Bei Timeout/Cancel zurück nach NOT_INSTALLED.
         Bei Exception -> ERROR."""
         try:
             deadline = _time.time() + self.USER_INSTALL_TIMEOUT
@@ -1517,7 +1517,7 @@ class OllamaManager(QObject):
                     log.info(
                         f"OllamaManager: Service nach {ping_count} Pings erreichbar"
                     )
-                    # Pruefe ob das gewuenschte Modell schon gepullt ist.
+                    # Prüfe ob das gewünschte Modell schon gepullt ist.
                     prefixes = [model_name, model_name + ":"]
                     has_it = any(
                         any(m.startswith(p) for p in prefixes) for m in models
@@ -1562,7 +1562,7 @@ class OllamaManager(QObject):
         PULLING, zieht das Modell, am Ende READY."""
         with self._lock:
             if self._busy:
-                self.error_message.emit("Eine andere Aktion laeuft bereits.")
+                self.error_message.emit("Eine andere Aktion läuft bereits.")
                 return
             self._busy = True
             self._cancel_pull = False
@@ -1573,9 +1573,9 @@ class OllamaManager(QObject):
         ).start()
 
     def cancel_pull(self):
-        """Bricht einen laufenden Modell-Pull ab. Der Worker prueft das Flag
+        """Bricht einen laufenden Modell-Pull ab. Der Worker prüft das Flag
         im Chunk-Read-Loop und wirft eine Exception, die zu NEEDS_MODEL
-        zurueckfuehrt (Service laeuft, Modell nur halb da)."""
+        zurückführt (Service läuft, Modell nur halb da)."""
         log.info("OllamaManager: User hat Pull abgebrochen")
         self._cancel_pull = True
 
@@ -1612,7 +1612,7 @@ class OllamaManager(QObject):
             buf = b""
             while True:
                 if self._cancel_pull:
-                    # Verbindung schliesst sich automatisch beim Verlassen
+                    # Verbindung schließt sich automatisch beim Verlassen
                     # des with-Blocks - urllib gibt die TCP-Connection frei,
                     # Ollama bricht den Server-seitigen Stream ab.
                     raise _PullCancelled()
@@ -1643,8 +1643,8 @@ class OllamaManager(QObject):
                         raise RuntimeError(msg["error"])
 
     # pull_model() ist Alias auf start_pull() - Aufrufer in der SettingsView
-    # nutzt diesen Namen wenn der User das Modell wechselt waehrend Ollama
-    # schon laeuft.
+    # nutzt diesen Namen wenn der User das Modell wechselt während Ollama
+    # schon läuft.
     pull_model = start_pull
 
 
@@ -1652,7 +1652,7 @@ class OllamaManager(QObject):
 
 # Mikrofon/Rec/Busy-Emoji aus der System-Emoji-Font in ein PNG rendern.
 # Grund: die alte Mac-Version zeigte 🎤 als Menubar-Title; QSystemTrayIcon
-# braucht aber ein Bild, kein Text. Qt kann Emojis ueber QFont rendern —
+# braucht aber ein Bild, kein Text. Qt kann Emojis über QFont rendern —
 # sieht in der Menubar fast identisch aus zu rumps' Text-Title.
 from PySide6.QtGui import QFont
 from PySide6.QtCore import QRectF
@@ -1665,15 +1665,15 @@ _ICON_EMOJIS = {
 
 
 # =====================================================================
-#  NativeStatusBar — Ersatz fuer QSystemTrayIcon.
+#  NativeStatusBar — Ersatz für QSystemTrayIcon.
 #
 #  Qts QSystemTrayIcon-Cocoa-Backend rendert auf macOS 26 das Icon nicht
-#  zuverlaessig (Qt meldet visible=True, trotzdem bleibt die Menubar
+#  zuverlässig (Qt meldet visible=True, trotzdem bleibt die Menubar
 #  leer). Wir umgehen Qt komplett und bauen direkt auf NSStatusBar +
 #  NSStatusItem + NSMenu — derselbe Mechanismus den rumps in v1 nutzt
 #  und der sicher funktioniert.
 #
-#  Menue-Klicks werden an die bestehenden QAction-Objekte (aus _build_menu)
+#  Menü-Klicks werden an die bestehenden QAction-Objekte (aus _build_menu)
 #  weitergereicht; das Gros der Qt-Struktur bleibt erhalten.
 # =====================================================================
 _NATIVE_ICON_TITLES = {"ready": "🎤", "rec": "🔴", "busy": "⏳"}
@@ -1684,7 +1684,7 @@ try:
     import objc as _objc
 
     class _NativeMenuTarget(NSObject):
-        """NSObject-Target fuer NSMenuItem-Klicks. Ruft ein Python-
+        """NSObject-Target für NSMenuItem-Klicks. Ruft ein Python-
         Callable auf. MUSS NSObject sein, sonst akzeptiert AppKit es
         nicht als target."""
         def initWithCallback_(self, cb):
@@ -1705,8 +1705,8 @@ except Exception:
 
 
 # Modul-globale Strong-Reference zum Status-Item. pyobjc-Objekte in
-# Hybrid-Event-Loops (Qt + CFRunLoop) werden manchmal zu frueh released,
-# selbst mit instance-attribute-ref — diese global haelt sie bombenfest.
+# Hybrid-Event-Loops (Qt + CFRunLoop) werden manchmal zu früh released,
+# selbst mit instance-attribute-ref — diese global hält sie bombenfest.
 _GLOBAL_TRAY_REF = None
 
 
@@ -1717,9 +1717,9 @@ class NativeStatusBar(QObject):
     (Isoliert-Test funktioniert, Qt-Variante nicht — Qts NSApplication
     blockt den Registrierungspfad). Wir spawnen daher einen reinen
     pyobjc-Kind-Prozess der NUR das Tray hostet. Kommunikation per
-    JSON-Lines ueber stdin/stdout.
+    JSON-Lines über stdin/stdout.
 
-    Menu-Klicks kommen ueber stdout zurueck und werden via Qt-Signal im
+    Menu-Klicks kommen über stdout zurück und werden via Qt-Signal im
     Main-Thread auf die jeweilige QAction.trigger() gerouted."""
 
     click_signal = Signal(str)  # action_id string
@@ -1835,8 +1835,8 @@ class NativeStatusBar(QObject):
 def _make_icon_pixmap(state):
     """Rendert das Mikrofon-Emoji (🎤) via native macOS NSImage+NSString.
     Qts QPainter+QFont rendert "Apple Color Emoji" auf Python-Standalone
-    nur lueckenhaft (~3% der Pixel); die native AppKit-Text-Pipeline
-    funktioniert dagegen zuverlaessig — das ist der gleiche Weg, den
+    nur lückenhaft (~3% der Pixel); die native AppKit-Text-Pipeline
+    funktioniert dagegen zuverlässig — das ist der gleiche Weg, den
     v1 (rumps) via NSStatusItem.title genutzt hat.
     Bei rec/busy overlayen wir einen farbigen Status-Punkt, damit man
     die Aufnahme sieht."""
@@ -1848,7 +1848,7 @@ def _make_icon_pixmap(state):
         )
         from Foundation import NSMakeSize, NSMakePoint, NSMakeRect, NSString
 
-        # 22pt logisch — macOS-Menubar-Standardhoehe. NSImage bekommt
+        # 22pt logisch — macOS-Menubar-Standardhöhe. NSImage bekommt
         # automatisch HiDPI-Representation vom Framework.
         logical = 22.0
         img = NSImage.alloc().initWithSize_(NSMakeSize(logical, logical))
@@ -1880,7 +1880,7 @@ def _make_icon_pixmap(state):
         return pm
     except Exception as e:
         log.warning(f"NSImage-Icon-Rendering fehlgeschlagen: {e}")
-        # Fallback: schlichtes graues Quadrat, damit ueberhaupt WAS da ist
+        # Fallback: schlichtes graues Quadrat, damit überhaupt WAS da ist
         size = 44
         pm = QPixmap(size, size)
         pm.setDevicePixelRatio(2.0)
@@ -1898,7 +1898,7 @@ def _make_icon_pixmap(state):
 class HotkeyRecorderDialog(QDialog):
     """Modaler Dialog zum Aufnehmen einer Tastenkombination.
 
-    Der User druckt einfach die gewuenschte Kombi (z.B. ⌃⇧), laesst
+    Der User druckt einfach die gewünschte Kombi (z.B. ⌃⇧), lässt
     los, der Dialog zeigt das Ergebnis und speichert es beim Klick auf
     "Speichern"."""
 
@@ -1908,15 +1908,15 @@ class HotkeyRecorderDialog(QDialog):
     # hartes Verbot, nur Confirm vor dem Speichern.
     _CONFLICT_COMBOS = {
         "cmd+c":     "Kopieren",
-        "cmd+v":     "Einfuegen (wird intern fuer Auto-Paste benutzt!)",
+        "cmd+v":     "Einfügen (wird intern für Auto-Paste benutzt!)",
         "cmd+x":     "Ausschneiden",
-        "cmd+z":     "Rueckgaengig",
+        "cmd+z":     "Rückgängig",
         "cmd+y":     "Wiederholen",
         "cmd+s":     "Speichern",
-        "cmd+a":     "Alles auswaehlen",
+        "cmd+a":     "Alles auswählen",
         "cmd+f":     "Suchen",
         "cmd+q":     "App beenden",
-        "cmd+w":     "Fenster schliessen",
+        "cmd+w":     "Fenster schließen",
         "cmd+m":     "Fenster minimieren",
         "cmd+h":     "App ausblenden",
         "cmd+space": "Spotlight",
@@ -1926,12 +1926,12 @@ class HotkeyRecorderDialog(QDialog):
 
     def __init__(self, parent=None, initial="", iqspeakr_app=None):
         super().__init__(parent)
-        self.setWindowTitle("Tastenkombination aendern")
+        self.setWindowTitle("Tastenkombination ändern")
         self.setModal(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        # WICHTIG fuer Mac: damit keyPressEvent ueberhaupt feuert MUSS der
+        # WICHTIG für Mac: damit keyPressEvent überhaupt feuert MUSS der
         # Dialog Tastatur-Fokus halten. Bei macOS holt sich modale QDialog
-        # den nicht zuverlaessig, wenn alle Buttons NoFocus sind. Wir holen
+        # den nicht zuverlässig, wenn alle Buttons NoFocus sind. Wir holen
         # ihn explicit beim Zeigen.
         self.resize(520, 280)
         if os.path.exists(APP_ICON_PATH):
@@ -1941,17 +1941,17 @@ class HotkeyRecorderDialog(QDialog):
         self._key = None
         self._capture_complete = False
         self._captured = (initial or "").strip().lower()
-        # Wenn der Dialog von SettingsView geoeffnet wird, schickt sie eine
-        # Referenz auf IQspeakrApp mit. Damit koennen wir den globalen
-        # Hotkey-Listener supressen waehrend wir tippen — sonst loest jedes
+        # Wenn der Dialog von SettingsView geöffnet wird, schickt sie eine
+        # Referenz auf IQspeakrApp mit. Damit können wir den globalen
+        # Hotkey-Listener supressen während wir tippen — sonst löst jedes
         # Press eines Modifiers eine Aufnahme aus statt nur den Recorder
-        # zu fuettern.
+        # zu füttern.
         self._iq_app = iqspeakr_app
         self._suppress_was = False
         # Timer-Fallback: 700 ms nach dem letzten keyPress finalisieren wir
         # den aktuellen Stand. Auf macOS kommen Modifier-Release-Events
         # nicht immer bei Qt an (pynput-CGEventTap im selben Prozess sieht
-        # sie zuerst), deshalb ist Release-only nicht zuverlaessig fuer
+        # sie zuerst), deshalb ist Release-only nicht zuverlässig für
         # reine Modifier-Kombis (⌃⇧, ⌘⇧). Der Timer ist das Sicherheitsnetz.
         self._capture_timer = QTimer(self)
         self._capture_timer.setSingleShot(True)
@@ -1962,7 +1962,7 @@ class HotkeyRecorderDialog(QDialog):
         layout.setContentsMargins(28, 24, 28, 22)
         layout.setSpacing(14)
 
-        head = QLabel("Druecke die gewuenschte Tastenkombination")
+        head = QLabel("Drücke die gewünschte Tastenkombination")
         head_font = head.font()
         head_font.setPointSizeF(head_font.pointSizeF() + 4)
         head_font.setBold(True)
@@ -2052,7 +2052,7 @@ class HotkeyRecorderDialog(QDialog):
             self._display.setText(hotkey_display(shown))
             self._display.setStyleSheet(f"color: {THEME_TEXT};")
         else:
-            self._display.setText("(druecke eine Taste)")
+            self._display.setText("(drücke eine Taste)")
             self._display.setStyleSheet(f"color: {THEME_TEXT_MUTED};")
 
         valid = bool(self._captured) and self._has_modifier(self._captured)
@@ -2070,13 +2070,13 @@ class HotkeyRecorderDialog(QDialog):
         if not combo or not self._has_modifier(combo):
             return
         # Konflikt-Heuristik: bekannte System-Standards mit Confirm-Dialog
-        # ueberschreiben lassen. Kein Hard-Block.
+        # überschreiben lassen. Kein Hard-Block.
         warn = self._CONFLICT_COMBOS.get(combo)
         if warn:
             confirm = QMessageBox.question(
                 self,
                 "Konflikt mit Standard-Shortcut",
-                f"\"{hotkey_display(combo)}\" ist normalerweise reserviert fuer:\n"
+                f"\"{hotkey_display(combo)}\" ist normalerweise reserviert für:\n"
                 f"  {warn}\n\n"
                 "Trotzdem als Hotkey verwenden?",
                 QMessageBox.Yes | QMessageBox.No,
@@ -2101,10 +2101,10 @@ class HotkeyRecorderDialog(QDialog):
 
     def hideEvent(self, event):
         # WICHTIG: hideEvent feuert sowohl bei accept() (Speichern) als
-        # auch bei reject()/Schliessen. closeEvent reicht NICHT, weil
-        # accept() das Fenster nur via hide() versteckt - dann wuerde
+        # auch bei reject()/Schließen. closeEvent reicht NICHT, weil
+        # accept() das Fenster nur via hide() versteckt - dann würde
         # der globale Listener supressed bleiben und der neue Hotkey
-        # waere stumm.
+        # wäre stumm.
         if self._iq_app is not None:
             self._iq_app._suppress_listener = self._suppress_was
         try:
@@ -2140,7 +2140,7 @@ class HotkeyRecorderDialog(QDialog):
             f"{self._build_combo_str()!r}"
         )
         self._refresh_display()
-        # Timer fuer Fallback-Finalisierung neu starten (siehe __init__).
+        # Timer für Fallback-Finalisierung neu starten (siehe __init__).
         self._capture_timer.start()
         event.accept()
 
@@ -2166,8 +2166,8 @@ class HotkeyRecorderDialog(QDialog):
     def _finalize_capture(self, source):
         """Schreibt den aktuell gehaltenen Stand nach _captured. Wird
         sowohl von keyReleaseEvent als auch vom Timer-Fallback (siehe
-        keyPressEvent) aufgerufen — letzterer ist Sicherheitsnetz fuer
-        macOS-Edge-Cases wo Modifier-Release-Events nicht zuverlaessig
+        keyPressEvent) aufgerufen — letzterer ist Sicherheitsnetz für
+        macOS-Edge-Cases wo Modifier-Release-Events nicht zuverlässig
         bei Qt ankommen (pynput-CGEventTap im selben Prozess kann sich
         einmischen)."""
         combo = self._build_combo_str()
@@ -2185,7 +2185,7 @@ class HotkeyRecorderDialog(QDialog):
 
 
 # =====================================================================
-#  Detail-Dialog fuer einen History-Eintrag.
+#  Detail-Dialog für einen History-Eintrag.
 # =====================================================================
 
 class TranscriptDetailDialog(QDialog):
@@ -2216,7 +2216,7 @@ class TranscriptDetailDialog(QDialog):
         self._copy_btn.setProperty("role", "primary")
         self._copy_btn.setMinimumHeight(32)
         self._copy_btn.clicked.connect(lambda: self._copy(text))
-        close_btn = QPushButton("Schliessen")
+        close_btn = QPushButton("Schließen")
         close_btn.setMinimumHeight(32)
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(self._copy_btn)
@@ -2306,7 +2306,7 @@ class HistoryEntryCard(QFrame):
         except Exception as e:
             log.warning(f"HistoryEntryCard: copy fehlgeschlagen: {e}")
             return
-        # kurzes visuelles Feedback - 1 s lang Check-Icon, dann zurueck.
+        # kurzes visuelles Feedback - 1 s lang Check-Icon, dann zurück.
         self._copy_btn.setIcon(_lucide_icon(_LUCIDE_CHECK, 16, THEME_SUCCESS))
         QTimer.singleShot(1000, self._reset_copy_icon)
 
@@ -2327,12 +2327,12 @@ class HomeView(QWidget):
         title.setProperty("role", "h1")
         layout.addWidget(title)
 
-        sub = QLabel(f"Die letzten {HISTORY_MAX} Transkripte. Aelteste fliegen automatisch raus.")
+        sub = QLabel(f"Die letzten {HISTORY_MAX} Transkripte. Älteste fliegen automatisch raus.")
         sub.setProperty("role", "sub")
         layout.addWidget(sub)
         layout.addSpacing(18)
 
-        # Card-Container fuer die Liste der Eintraege - wird gefuellt
+        # Card-Container für die Liste der Einträge - wird gefüllt
         # von refresh().
         self._card = QFrame()
         self._card.setObjectName("HistoryCard")
@@ -2344,7 +2344,7 @@ class HomeView(QWidget):
             f"}}"
         )
 
-        # ScrollArea umschliesst den Card-Container, damit lange History
+        # ScrollArea umschließt den Card-Container, damit lange History
         # vertikal scrollbar wird ohne dass die Card-Border bricht.
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -2373,7 +2373,7 @@ class HomeView(QWidget):
 
         self._entries = self.app.history.items()
         if not self._entries:
-            empty = QLabel("Noch keine Aufnahmen.\nHalte deinen Hotkey gedrueckt und sprich.")
+            empty = QLabel("Noch keine Aufnahmen.\nHalte deinen Hotkey gedrückt und sprich.")
             empty.setAlignment(Qt.AlignCenter)
             empty.setWordWrap(True)
             empty.setStyleSheet(f"color: {THEME_TEXT_MUTED}; padding: 60px 20px;")
@@ -2398,7 +2398,7 @@ class HomeView(QWidget):
 # =====================================================================
 
 class StatCard(QFrame):
-    """Eine Kennzahl-Card: grosser Wert, Label, optional Sub-Label."""
+    """Eine Kennzahl-Card: großer Wert, Label, optional Sub-Label."""
 
     def __init__(self, label, value, sub=None, parent=None):
         super().__init__(parent)
@@ -2445,16 +2445,16 @@ class StatCard(QFrame):
 
 class _ResponsiveCardGrid(QWidget):
     """Container der Cards in einem dynamischen Grid anordnet. Spalten-
-    Anzahl wird in resizeEvent abhaengig von der eigenen Breite gewaehlt
-    (Breakpoints siehe BREAKPOINTS). Aequivalent zu CSS
+    Anzahl wird in resizeEvent abhängig von der eigenen Breite gewählt
+    (Breakpoints siehe BREAKPOINTS). Äquivalent zu CSS
     `grid-template-columns: repeat(auto-fit, minmax(MIN, 1fr))` — Qt
     hat das nativ nicht.
 
     Die Cards strecken sich auf gleiche Spaltenbreite. Der Reflow
-    passiert nur wenn sich die Spalten-Anzahl tatsaechlich aendert,
+    passiert nur wenn sich die Spalten-Anzahl tatsächlich ändert,
     sonst Flickern."""
 
-    # Map: Mindest-Breite des Grids -> Spalten-Anzahl. Grosse Schwelle
+    # Map: Mindest-Breite des Grids -> Spalten-Anzahl. Große Schwelle
     # zuerst (wir nehmen die erste passende). Die konkreten Werte werden
     # vom Caller gesetzt (Style: 4/2/1, Dashboard: 3/2/1).
     DEFAULT_BREAKPOINTS = ((1100, 4), (800, 2), (0, 1))
@@ -2470,7 +2470,7 @@ class _ResponsiveCardGrid(QWidget):
 
     def add_card(self, widget):
         self._cards.append(widget)
-        # Erst-Anordnung: aktuelle Breite koennte 0 sein wenn das Widget
+        # Erst-Anordnung: aktuelle Breite könnte 0 sein wenn das Widget
         # noch nicht im Layout ist - dann nehmen wir die maximale Spalten-
         # Anzahl als Default, der echte Reflow kommt im ersten resizeEvent.
         if self._current_cols < 0:
@@ -2488,7 +2488,7 @@ class _ResponsiveCardGrid(QWidget):
         if not force and cols == self._current_cols:
             return
         self._current_cols = cols
-        # Alle Widgets aus dem Grid loesen (nicht zerstoeren).
+        # Alle Widgets aus dem Grid lösen (nicht zerstören).
         for c in self._cards:
             self._grid.removeWidget(c)
         # Neu platzieren.
@@ -2496,7 +2496,7 @@ class _ResponsiveCardGrid(QWidget):
             row = i // cols
             col = i % cols
             self._grid.addWidget(card, row, col)
-        # Alle Spalten gleichmaessig stretchen, leere Spalten zuruecksetzen.
+        # Alle Spalten gleichmäßig stretchen, leere Spalten zurücksetzen.
         max_cols = max(c for _, c in self._breakpoints)
         for ci in range(max_cols):
             self._grid.setColumnStretch(ci, 1 if ci < cols else 0)
@@ -2509,15 +2509,15 @@ class _ResponsiveCardGrid(QWidget):
 class HeatmapWidget(QWidget):
     """12 Wochen Activity-Heatmap, GitHub-Style. Mouseover setzt Tooltip
     'X Aufnahmen am DD.MM.YYYY'. Spalten = Wochen (Mo bis So), Zeilen =
-    Wochentage. Die rechte Spalte enthaelt die aktuelle (oft unvollstaendige)
-    Woche, die linke die aelteste der 12-Wochen-Range."""
+    Wochentage. Die rechte Spalte enthält die aktuelle (oft unvollständige)
+    Woche, die linke die älteste der 12-Wochen-Range."""
 
     WEEKS = 12
     DAYS = 7
     CELL = 14
     GAP = 4
-    LEFT_PAD = 36     # Platz fuer Wochentag-Labels
-    TOP_PAD = 22      # Platz fuer Monatslabels
+    LEFT_PAD = 36     # Platz für Wochentag-Labels
+    TOP_PAD = 22      # Platz für Monatslabels
     LEGEND_HEIGHT = 26
 
     # 5 Stufen, von "leer" bis "voll" - voll = Akzent.
@@ -2532,9 +2532,9 @@ class HeatmapWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._counts = {}     # date -> int
-        self._cells = []      # [(QRect, date, count), ...] fuer Mouse-Lookup
+        self._cells = []      # [(QRect, date, count), ...] für Mouse-Lookup
         self.setMouseTracking(True)
-        # Hoehe = Top-Pad + 7 Zeilen + 6 Gaps + Legenden-Bereich
+        # Höhe = Top-Pad + 7 Zeilen + 6 Gaps + Legenden-Bereich
         h = self.TOP_PAD + self.DAYS * self.CELL + (self.DAYS - 1) * self.GAP + self.LEGEND_HEIGHT
         self.setMinimumHeight(h)
         # Breite reserviert sich an Layout-Stretch, paint nutzt was da ist.
@@ -2557,7 +2557,7 @@ class HeatmapWidget(QWidget):
         today = date.today()
         # Letztes Sonntag der Anzeige = Ende der aktuellen Woche.
         # Mo=0..So=6. Wir wollen Spalten von links (alteste Woche) nach
-        # rechts (juengste Woche, endet am letzten Sonntag).
+        # rechts (jüngste Woche, endet am letzten Sonntag).
         end_sunday = today + timedelta(days=(6 - today.weekday()))
         start_monday = end_sunday - timedelta(days=self.WEEKS * 7 - 1)
 
@@ -2572,11 +2572,11 @@ class HeatmapWidget(QWidget):
             p.drawText(2, y, name)
 
         # Monats-Labels: einmal pro Monat, dort wo eine neue Spalte
-        # einen Monatsanfang (Tag 1-7 = erste Woche) enthaelt.
+        # einen Monatsanfang (Tag 1-7 = erste Woche) enthält.
         last_month = None
         for col in range(self.WEEKS):
             week_start = start_monday + timedelta(days=col * 7)
-            # Pruefe ob in dieser Woche der Monatsanfang liegt
+            # Prüfe ob in dieser Woche der Monatsanfang liegt
             for d in range(7):
                 day = week_start + timedelta(days=d)
                 if day.day <= 7 and day.month != last_month:
@@ -2689,9 +2689,9 @@ class DashboardView(QWidget):
         sp.setSpacing(20)
 
         # Stat-Cards-Grid: responsive 3/2/1 Spalten (Breakpoints 1100/800).
-        self._wpm_card = StatCard("Woerter pro Minute", "—")
-        self._words_card = StatCard("Woerter insgesamt", "0")
-        self._streak_card = StatCard("Tage Streak", "0", sub="Laengster Streak: 0 Tage")
+        self._wpm_card = StatCard("Wörter pro Minute", "—")
+        self._words_card = StatCard("Wörter insgesamt", "0")
+        self._streak_card = StatCard("Tage Streak", "0", sub="Längster Streak: 0 Tage")
         cards_grid = _ResponsiveCardGrid(
             breakpoints=((1100, 3), (800, 2), (0, 1)), gap=16,
         )
@@ -2715,7 +2715,7 @@ class DashboardView(QWidget):
         hc = QVBoxLayout(heat_card)
         hc.setContentsMargins(20, 18, 20, 18)
         hc.setSpacing(10)
-        hc_title = QLabel("Aktivitaet (letzte 12 Wochen)")
+        hc_title = QLabel("Aktivität (letzte 12 Wochen)")
         hc_title.setStyleSheet(f"color: {THEME_TEXT}; font-weight: 600;")
         hc.addWidget(hc_title)
         self._heatmap = HeatmapWidget()
@@ -2727,7 +2727,7 @@ class DashboardView(QWidget):
         heat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         heat_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # QScrollArea hat einen winzigen Default-sizeHint (~70 px). Im
-        # aeusseren VBox-Layout wuerde die Card sonst auf diese Hoehe
+        # äußeren VBox-Layout würde die Card sonst auf diese Höhe
         # zerquetscht und die Heatmap durch widgetResizable+ScrollBarOff
         # vertikal abgeschnitten. minimumHeight (kein fixed) so setzen,
         # dass alle 7 Reihen + Legende reinpassen - Card darf weiterhin
@@ -2762,7 +2762,7 @@ class DashboardView(QWidget):
             self._wpm_card.set_value(f"{wpm:.0f}")
             self._wpm_card.set_sub(None)
 
-        # Woerter total - Tausender mit Punkt (DE-Konvention).
+        # Wörter total - Tausender mit Punkt (DE-Konvention).
         total = self.app.stats.total_words()
         self._words_card.set_value(f"{total:,}".replace(",", "."))
 
@@ -2771,7 +2771,7 @@ class DashboardView(QWidget):
         longest = self.app.stats.longest_streak()
         self._streak_card.set_value(str(cur))
         self._streak_card.set_sub(
-            f"Laengster Streak: {longest} {'Tag' if longest == 1 else 'Tage'}"
+            f"Längster Streak: {longest} {'Tag' if longest == 1 else 'Tage'}"
         )
 
         # Heatmap
@@ -2784,8 +2784,8 @@ class DashboardView(QWidget):
 # =====================================================================
 
 class StyleCard(QFrame):
-    """Eine klickbare Karte fuer einen Style. Selected-State steuert die
-    Border-Farbe ueber stylesheet-property 'selected'."""
+    """Eine klickbare Karte für einen Style. Selected-State steuert die
+    Border-Farbe über stylesheet-property 'selected'."""
 
     clicked = Signal(str)  # style key
 
@@ -2913,7 +2913,7 @@ class StyleView(QWidget):
         # Mind. 4 Zeilen reservieren: lock_box wird via Qt.AlignCenter mit
         # seinem sizeHint platziert, das beim Konstruieren mit leerem Text
         # entsteht. Ohne diese Reservierung wird der Hinweistext nach dem
-        # spaeteren setText() abgeschnitten.
+        # späteren setText() abgeschnitten.
         fm = self._lock_text.fontMetrics()
         self._lock_text.setMinimumHeight(fm.lineSpacing() * 4)
         lb_layout.addWidget(self._lock_text)
@@ -2952,7 +2952,7 @@ class StyleView(QWidget):
             breakpoints=((1100, 4), (800, 2), (0, 1)), gap=14,
         )
         for key, label in (
-            ("formal",      "Foermlich"),
+            ("formal",      "Förmlich"),
             ("locker",      "Locker"),
             ("sehr_locker", "Sehr locker"),
             ("custom",      "Individuell"),
@@ -2970,10 +2970,10 @@ class StyleView(QWidget):
         cp.addSpacing(16)
 
         # Individuell-Editor (sichtbar wenn style==custom).
-        # WICHTIG zur Layout-Stabilitaet: cb_layout.setSpacing(12) sorgt
-        # dafuer, dass Save-Button-Row IMMER 16px Abstand zum Textfeld
-        # haelt (Spacing + addSpacing(4)) — sonst wandert der Button bei
-        # zu schmalem Fenster optisch ueber das Textfeld.
+        # WICHTIG zur Layout-Stabilität: cb_layout.setSpacing(12) sorgt
+        # dafür, dass Save-Button-Row IMMER 16px Abstand zum Textfeld
+        # hält (Spacing + addSpacing(4)) — sonst wandert der Button bei
+        # zu schmalem Fenster optisch über das Textfeld.
         self._custom_box = QGroupBox("Individuell-Konfiguration")
         cb_layout = QVBoxLayout(self._custom_box)
         cb_layout.setSpacing(12)
@@ -2987,7 +2987,7 @@ class StyleView(QWidget):
             self._checkbox_widgets[key] = cb
 
         cb_layout.addSpacing(10)
-        custom_label = QLabel("Eigene Anweisungen (werden an die obigen Regeln angehaengt):")
+        custom_label = QLabel("Eigene Anweisungen (werden an die obigen Regeln angehängt):")
         custom_label.setProperty("role", "muted")
         cb_layout.addWidget(custom_label)
         self._extra_edit = QPlainTextEdit()
@@ -2998,7 +2998,7 @@ class StyleView(QWidget):
         self._extra_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         cb_layout.addWidget(self._extra_edit)
         # 16 px Sicherheits-Spacing zwischen Textfeld und Save-Row,
-        # zusaetzlich zum cb_layout.setSpacing(12).
+        # zusätzlich zum cb_layout.setSpacing(12).
         cb_layout.addSpacing(4)
 
         save_row = QHBoxLayout()
@@ -3051,9 +3051,9 @@ class StyleView(QWidget):
         save_config(self.app.config)
 
     def refresh_lock(self):
-        """Page 0 vs Page 1 umschalten. Voraussetzung fuer die Style-Auswahl
-        sind ZWEI Bedingungen: Ollama laeuft UND der User hat die KI-
-        Bereinigung aktiviert. Sonst hat das Aendern des Stils keinen
+        """Page 0 vs Page 1 umschalten. Voraussetzung für die Style-Auswahl
+        sind ZWEI Bedingungen: Ollama läuft UND der User hat die KI-
+        Bereinigung aktiviert. Sonst hat das Ändern des Stils keinen
         Effekt - dann lieber transparent sperren."""
         ready = self.app.ollama_mgr.is_ready()
         cleanup_on = bool(self.app.cleanup_enabled)
@@ -3067,7 +3067,7 @@ class StyleView(QWidget):
         else:
             self._lock_text.setText(
                 "KI-Textbereinigung ist deaktiviert. Aktiviere die Checkbox "
-                "in den Einstellungen, um den Schreibstil zu waehlen."
+                "in den Einstellungen, um den Schreibstil zu wählen."
             )
         self._stack.setCurrentIndex(1 if unlocked else 0)
 
@@ -3128,13 +3128,13 @@ class SettingsView(QWidget):
         gl.setVerticalSpacing(16)
         gl.setContentsMargins(0, 4, 0, 0)
         gl.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        # Bei schmalem Fenster (<600 px Card-Breite) Label ueber den Wert
-        # stapeln statt nebeneinander - sonst ueberquetscht das Layout.
+        # Bei schmalem Fenster (<600 px Card-Breite) Label über den Wert
+        # stapeln statt nebeneinander - sonst überquetscht das Layout.
         gl.setRowWrapPolicy(QFormLayout.WrapLongRows)
 
         self._hotkey_label = QLabel(hotkey_display(self.app.config.get("hotkey", "")))
         self._hotkey_label.setStyleSheet(f"color: {THEME_TEXT}; font-weight: 500;")
-        hot_btn = QPushButton("Aendern...")
+        hot_btn = QPushButton("Ändern...")
         hot_btn.clicked.connect(self._change_hotkey)
         hot_row = QHBoxLayout()
         hot_row.setSpacing(10)
@@ -3146,8 +3146,8 @@ class SettingsView(QWidget):
         for size, label in (
             ("tiny",   "tiny - Sehr schnell, ungenau (~75 MB)"),
             ("base",   "base - Guter Kompromiss (~145 MB)"),
-            ("small",  "small - Gute Qualitaet (~465 MB)"),
-            ("medium", "medium - Beste Qualitaet (~1.5 GB)"),
+            ("small",  "small - Gute Qualität (~465 MB)"),
+            ("medium", "medium - Beste Qualität (~1.5 GB)"),
         ):
             self._whisper_combo.addItem(label, size)
         cur_w = self.app.config.get("whisper_model", "base")
@@ -3173,7 +3173,7 @@ class SettingsView(QWidget):
         self._lang_combo.currentIndexChanged.connect(self._on_language_changed)
         gl.addRow(self._form_label("Sprache"), self._lang_combo)
 
-        self._overlay_cb = QCheckBox("Pill-Overlay waehrend Aufnahme anzeigen")
+        self._overlay_cb = QCheckBox("Pill-Overlay während Aufnahme anzeigen")
         self._overlay_cb.setChecked(bool(self.app.config.get("overlay_enabled", True)))
         self._overlay_cb.toggled.connect(self._on_overlay_toggled)
         gl.addRow(self._form_label(""), self._overlay_cb)
@@ -3227,10 +3227,10 @@ class SettingsView(QWidget):
         self._action_btn.setMinimumWidth(220)
         self._action_btn.clicked.connect(self._on_action_clicked)
         action_row.addWidget(self._action_btn)
-        # Sekundaerer Toggle-Button: schaltet die Ollama-Integration komplett
+        # Sekundärer Toggle-Button: schaltet die Ollama-Integration komplett
         # aus oder wieder ein. Kleiner als der Hauptbutton, sichtbar in den
         # passenden States (READY/NEEDS_MODEL/ERROR/DISABLED). Beim Klick im
-        # DISABLED-State wird er der primaere "Aktivieren"-Trigger.
+        # DISABLED-State wird er der primäre "Aktivieren"-Trigger.
         self._toggle_btn = QPushButton()
         self._toggle_btn.setMinimumHeight(34)
         self._toggle_btn.setMinimumWidth(180)
@@ -3245,8 +3245,8 @@ class SettingsView(QWidget):
         ob.addWidget(self._cleanup_cb)
 
         # ---- Hinweis-Block: "Wann brauchst du KI-Textbereinigung?" ----
-        # Dezent indigofarbener Container mit Erklaerung warum Whisper allein
-        # in den meisten Faellen reicht. User-Spec 2026-04-27.
+        # Dezent indigofarbener Container mit Erklärung warum Whisper allein
+        # in den meisten Fällen reicht. User-Spec 2026-04-27.
         hint_box = QFrame()
         hint_box.setObjectName("OllamaHintBox")
         hint_box.setStyleSheet(
@@ -3276,9 +3276,9 @@ class SettingsView(QWidget):
         hb.addLayout(head_row)
 
         para1 = QLabel(
-            "Whisper setzt bereits automatisch <b>Satzzeichen, Grossschreibung</b> "
-            "und filtert die meisten <b>Fuellwoerter</b> (aehm, aeh) sowie Stotterer "
-            "raus. Fuer klares, ruhiges Diktat reicht das vollkommen."
+            "Whisper setzt bereits automatisch <b>Satzzeichen, Großschreibung</b> "
+            "und filtert die meisten <b>Füllwörter</b> (ähm, äh) sowie Stotterer "
+            "raus. Für klares, ruhiges Diktat reicht das vollkommen."
         )
         para1.setWordWrap(True)
         para1.setTextFormat(Qt.RichText)
@@ -3291,8 +3291,8 @@ class SettingsView(QWidget):
         hb.addWidget(sub_lbl)
 
         bullets = QLabel(
-            "•  sehr unkonzentriert sprichst (viele 'aehm', 'halt', 'also', Wortdoppelungen)<br>"
-            "•  echtes <b>foermliches Schriftdeutsch</b> moechtest (Style 'Foermlich')<br>"
+            "•  sehr unkonzentriert sprichst (viele 'ähm', 'halt', 'also', Wortdoppelungen)<br>"
+            "•  echtes <b>förmliches Schriftdeutsch</b> möchtest (Style 'Förmlich')<br>"
             "•  eigene Cleanup-Regeln einsetzen willst (Style 'Individuell')"
         )
         bullets.setTextFormat(Qt.RichText)
@@ -3303,7 +3303,7 @@ class SettingsView(QWidget):
         hb.addWidget(bullets)
 
         para2 = QLabel(
-            "<b>Trade-off:</b> Cleanup kostet je nach Modell und Textlaenge "
+            "<b>Trade-off:</b> Cleanup kostet je nach Modell und Textlänge "
             "<b>etwa 1-7 Sekunden</b> pro Aufnahme. Ohne Cleanup landet der "
             "Text fast sofort im Zielfeld."
         )
@@ -3324,8 +3324,8 @@ class SettingsView(QWidget):
         self.app.ollama_mgr.error_message.connect(self._on_error)
         # Live-Sync von Tray-Submenu zu SettingsView: alle vier Setting-
         # Signale subscriben, damit das UI mitwandert wenn der User
-        # ueber's Tray-Menu was aendert (umgekehrte Richtung lief schon
-        # ueber rebuild_menu_sig).
+        # über's Tray-Menu was ändert (umgekehrte Richtung lief schon
+        # über rebuild_menu_sig).
         self.app.hotkey_changed.connect(self._on_hotkey_changed)
         self.app.whisper_changed.connect(self._on_whisper_remote)
         self.app.language_changed.connect(self._on_language_remote)
@@ -3346,7 +3346,7 @@ class SettingsView(QWidget):
 
     def _change_hotkey(self):
         # iqspeakr_app=self.app gibt dem Dialog Zugriff auf den globalen
-        # Listener — er supressed ihn waehrend des Tippens, sonst loest
+        # Listener — er supressed ihn während des Tippens, sonst löst
         # jeder Modifier-Druck im Dialog eine Aufnahme aus.
         dlg = HotkeyRecorderDialog(
             self,
@@ -3357,7 +3357,7 @@ class SettingsView(QWidget):
             combo = dlg.result_combo()
             log.info(f"SettingsView._change_hotkey: dialog returned combo={combo!r}")
             if combo:
-                # SoT: alles laeuft ueber app._apply_hotkey. Das schreibt
+                # SoT: alles läuft über app._apply_hotkey. Das schreibt
                 # config, persistiert, restartet Listener, refresht das
                 # Tray-Menu UND emittet hotkey_changed -> unser
                 # _on_hotkey_changed-Slot updatet das Label.
@@ -3375,15 +3375,15 @@ class SettingsView(QWidget):
     def _on_whisper_changed(self, _idx):
         # User hat im Combo etwas angeklickt -> SoT-Apply ruft auch das
         # Live-Update-Signal, das wiederum unser _on_whisper_remote-Slot
-        # an den Combo zurueckspielt (no-op falls Combo schon da ist).
+        # an den Combo zurückspielt (no-op falls Combo schon da ist).
         size = self._whisper_combo.currentData()
         if size:
             self.app._apply_whisper(size)
 
     def _on_language_changed(self, _idx):
         code = self._lang_combo.currentData()
-        # ComboBox-Daten koennen None sein (Eintrag "Automatisch") - das
-        # ist ein gueltiger Wert und KEIN Abbruch-Grund.
+        # ComboBox-Daten können None sein (Eintrag "Automatisch") - das
+        # ist ein gültiger Wert und KEIN Abbruch-Grund.
         if self._lang_combo.currentIndex() < 0:
             return
         self.app._apply_language(code)
@@ -3403,10 +3403,10 @@ class SettingsView(QWidget):
         if new_model:
             self.app._apply_ollama_model(new_model)
 
-    # --- Slots fuer Live-Sync von Tray -> SettingsView ---
+    # --- Slots für Live-Sync von Tray -> SettingsView ---
     def _select_combo_data(self, combo, value):
         """Setzt den Combo auf den Index, dessen userData == value ist.
-        Block signals waehrenddessen, sonst feuern wir einen unnoetigen
+        Block signals währenddessen, sonst feuern wir einen unnötigen
         Apply-Roundtrip."""
         for i in range(combo.count()):
             if combo.itemData(i) == value:
@@ -3450,25 +3450,25 @@ class SettingsView(QWidget):
         state = self.app.ollama_mgr.state()
         model = self._model_combo.currentData() or self.app.config.get("ollama_model", "llama3.2")
         if state == OLLAMA_NOT_INSTALLED or state == OLLAMA_ERROR:
-            # Mac: oeffnet die offizielle Ollama-Download-Seite und
+            # Mac: öffnet die offizielle Ollama-Download-Seite und
             # triggert OLLAMA_WAITING_FOR_USER.
             self.app.ollama_mgr.install(model)
         elif state == OLLAMA_WAITING_FOR_USER:
-            # Watch-Thread abbrechen - State geht zurueck nach NOT_INSTALLED.
+            # Watch-Thread abbrechen - State geht zurück nach NOT_INSTALLED.
             self.app.ollama_mgr.cancel_install()
         elif state == OLLAMA_NEEDS_MODEL:
             # User hat den Pull explizit getriggert - ohne diesen Klick
             # passiert nichts (kein 2-4 GB Auto-Download).
             self.app.ollama_mgr.start_pull(model)
         elif state == OLLAMA_PULLING:
-            # Laufenden Pull abbrechen - State geht zurueck nach NEEDS_MODEL.
+            # Laufenden Pull abbrechen - State geht zurück nach NEEDS_MODEL.
             self.app.ollama_mgr.cancel_pull()
-        # READY und DISABLED haben hier keine Action - die werden ueber den
+        # READY und DISABLED haben hier keine Action - die werden über den
         # Toggle-Button gehandhabt (siehe _on_toggle_clicked).
 
     def _on_toggle_clicked(self):
-        """Sekundaerer Button: schaltet die Ollama-Integration aus / wieder
-        ein. Aus jedem State erreichbar (ausser WAITING/PULLING wo der
+        """Sekundärer Button: schaltet die Ollama-Integration aus / wieder
+        ein. Aus jedem State erreichbar (außer WAITING/PULLING wo der
         Hauptbutton der Cancel ist - dort ist der Toggle hidden)."""
         state = self.app.ollama_mgr.state()
         model = self._model_combo.currentData() or self.app.config.get("ollama_model", "llama3.2")
@@ -3495,7 +3495,7 @@ class SettingsView(QWidget):
 
     def _refresh_ollama_ui(self):
         state = self.app.ollama_mgr.state()
-        # Sichtbarkeit Default zuruecksetzen
+        # Sichtbarkeit Default zurücksetzen
         self._progress.setVisible(False)
         self._progress_text.setVisible(False)
         # Toggle-Button: Default sichtbar als "Deaktivieren". In WAITING/
@@ -3509,8 +3509,8 @@ class SettingsView(QWidget):
 
         if state == OLLAMA_DISABLED:
             self._ollama_status.setText(
-                "Ollama ist pausiert. Backend laeuft nicht, Cleanup "
-                "ueberspringen."
+                "Ollama ist pausiert. Backend läuft nicht, Cleanup "
+                "überspringen."
             )
             self._ollama_status.setStyleSheet(f"color: {THEME_TEXT_MUTED};")
             self._action_btn.setText("Pausiert")
@@ -3525,7 +3525,7 @@ class SettingsView(QWidget):
                 "offizielle Ollama.app von ollama.com installieren."
             )
             self._ollama_status.setStyleSheet(f"color: {THEME_TEXT_SECONDARY};")
-            self._action_btn.setText("Ollama-Download-Seite oeffnen")
+            self._action_btn.setText("Ollama-Download-Seite öffnen")
             self._set_action_role("primary")
             self._action_btn.setEnabled(True)
             self._model_combo.setEnabled(True)
@@ -3533,7 +3533,7 @@ class SettingsView(QWidget):
             self._ollama_status.setText(
                 "Download-Seite ist offen. Installiere Ollama und starte "
                 "die Ollama.app — IQspeakr merkt automatisch wenn der "
-                "Service laeuft."
+                "Service läuft."
             )
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
             self._action_btn.setText("Abbrechen")
@@ -3548,7 +3548,7 @@ class SettingsView(QWidget):
         elif state == OLLAMA_NEEDS_MODEL:
             mdl = self._model_combo.currentData() or self.app.config.get("ollama_model", "llama3.2")
             self._ollama_status.setText(
-                f"Ollama laeuft, aber Modell '{mdl}' fehlt noch. "
+                f"Ollama läuft, aber Modell '{mdl}' fehlt noch. "
                 "Klick auf den Button startet den Download (je nach "
                 "Modell 2-5 GB)."
             )
@@ -3568,10 +3568,10 @@ class SettingsView(QWidget):
             self._progress_text.setVisible(True)
             self._toggle_btn.setVisible(False)
         elif state == OLLAMA_READY:
-            self._ollama_status.setText("Ollama aktiv. KI-Textbereinigung verfuegbar.")
+            self._ollama_status.setText("Ollama aktiv. KI-Textbereinigung verfügbar.")
             self._ollama_status.setStyleSheet(f"color: {THEME_SUCCESS}; font-weight: 500;")
             # Bei READY ist nichts zu tun - daher Action-Button greyen
-            # statt ein wenig hilfreiches "Browser oeffnen" anzubieten.
+            # statt ein wenig hilfreiches "Browser öffnen" anzubieten.
             self._action_btn.setText("Ollama bereit ✓")
             self._set_action_role("primary")
             self._action_btn.setEnabled(False)
@@ -3584,7 +3584,7 @@ class SettingsView(QWidget):
             self._action_btn.setEnabled(True)
             self._model_combo.setEnabled(True)
         # Cleanup-Toggle ist immer aktiv - der User entscheidet selbst.
-        # Im DISABLED-State spielt's keine Rolle (Cleanup laeuft eh nicht),
+        # Im DISABLED-State spielt's keine Rolle (Cleanup läuft eh nicht),
         # aber der State soll persistent bleiben.
         self._cleanup_cb.setEnabled(True)
 
@@ -3602,7 +3602,7 @@ class MainWindow(QMainWindow):
     ]
 
     # Sidebar-QSS: 11/14-Padding, 6px-Radius, Hover-Tint, Active mit
-    # 3px Akzent-Strich links + kraeftigerer Schrift. padding-left wird
+    # 3px Akzent-Strich links + kräftigerer Schrift. padding-left wird
     # im selected-State um 3px reduziert, damit der Text nicht springt
     # wenn der Strich erscheint.
     SIDEBAR_LIST_QSS = (
@@ -3629,7 +3629,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.app = app
         self.setWindowTitle("IQspeakr")
-        # Mindestgroesse: unter 900x700 wird das Layout nicht mehr sinnvoll
+        # Mindestgröße: unter 900x700 wird das Layout nicht mehr sinnvoll
         # darstellbar (Style-Cards in 1 Spalte, Settings-Form-Wrap aktiv).
         self.setMinimumSize(900, 700)
         # Initial-Geometrie aus config; Default 1280x900 beim ersten Start.
@@ -3638,8 +3638,8 @@ class MainWindow(QMainWindow):
         w = int(self.app.config.get("window_width", 1280))
         h_ = int(self.app.config.get("window_height", 900))
         self.resize(max(900, w), max(700, h_))
-        # Debouncer fuer den Resize-Save: feuert 200 ms nach dem letzten
-        # Resize-Event und schreibt die finale Groesse in config.json.
+        # Debouncer für den Resize-Save: feuert 200 ms nach dem letzten
+        # Resize-Event und schreibt die finale Größe in config.json.
         self._resize_save_timer = QTimer(self)
         self._resize_save_timer.setSingleShot(True)
         self._resize_save_timer.setInterval(200)
@@ -3674,8 +3674,8 @@ class MainWindow(QMainWindow):
         hl.setContentsMargins(18, 14, 16, 14)
         hl.setSpacing(10)
 
-        # Logo: Indigo-Quadrat + weisses Mikro - konsistent zum Theme-Akzent.
-        # Die .icns-Datei nutzen wir weiter fuer Window-/Dock-Icon, hier
+        # Logo: Indigo-Quadrat + weißes Mikro - konsistent zum Theme-Akzent.
+        # Die .icns-Datei nutzen wir weiter für Window-/Dock-Icon, hier
         # in der Sidebar wollen wir das markante Brand-Element.
         icon_lbl = QLabel()
         icon_lbl.setPixmap(_make_app_logo_pixmap(28))
@@ -3712,7 +3712,7 @@ class MainWindow(QMainWindow):
             self._sidebar.addItem(it)
         sw_layout.addWidget(self._sidebar, 1)
 
-        # --- Trenner ueber Settings (sehr dezent, low-opacity) ---
+        # --- Trenner über Settings (sehr dezent, low-opacity) ---
         bottom_sep = QFrame()
         bottom_sep.setFixedHeight(1)
         bottom_sep.setStyleSheet(f"background: {THEME_BORDER_SOFT};")
@@ -3763,7 +3763,7 @@ class MainWindow(QMainWindow):
 
         # Style-Sperre reagiert auf zwei Signale:
         #  1. Ollama-State-Wechsel
-        #  2. cleanup_enabled-Toggle in der SettingsView (laeuft ueber
+        #  2. cleanup_enabled-Toggle in der SettingsView (läuft über
         #     rebuild_menu_sig, das eh nach jedem Settings-Change feuert).
         self.app.ollama_mgr.state_changed.connect(self._on_ollama_state)
         self.app.rebuild_menu_sig.connect(self._on_settings_changed)
@@ -3793,8 +3793,8 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         # Bei jedem Resize den Save-Timer neu starten - nach 200 ms ohne
-        # weiteres Resize wird die aktuelle Groesse in config persistiert.
-        # So vermeiden wir Disk-IO bei jedem Pixel waehrend des Draggens.
+        # weiteres Resize wird die aktuelle Größe in config persistiert.
+        # So vermeiden wir Disk-IO bei jedem Pixel während des Draggens.
         super().resizeEvent(event)
         self._resize_save_timer.start()
 
@@ -3807,9 +3807,9 @@ class MainWindow(QMainWindow):
             log.warning(f"MainWindow: Fenstergroesse-Persistenz fehlgeschlagen: {e}")
 
     def closeEvent(self, event):
-        # Schliessen versteckt nur, App lebt im Tray weiter.
-        # Vorher noch die finale Groesse persistieren (falls der Timer
-        # noch laeuft und nicht gefeuert hat).
+        # Schließen versteckt nur, App lebt im Tray weiter.
+        # Vorher noch die finale Größe persistieren (falls der Timer
+        # noch läuft und nicht gefeuert hat).
         if self._resize_save_timer.isActive():
             self._resize_save_timer.stop()
             self._persist_window_size()
@@ -3818,32 +3818,32 @@ class MainWindow(QMainWindow):
 
 
 # =====================================================================
-#  Haupt-App: QObject mit Signals fuer thread-safe GUI-Updates.
+#  Haupt-App: QObject mit Signals für thread-safe GUI-Updates.
 # =====================================================================
 
 class IQspeakrApp(QObject):
 
-    # Signals, die Worker-Threads emittieren koennen, um die GUI
-    # (tray-icon, menue, notifications) im Main-Thread zu aktualisieren.
+    # Signals, die Worker-Threads emittieren können, um die GUI
+    # (tray-icon, menü, notifications) im Main-Thread zu aktualisieren.
     icon_state_sig = Signal(str)
     rebuild_menu_sig = Signal()
     notify_sig = Signal(str, str)
     status_sig = Signal(str)
-    # Overlay-Show/Hide MUSS ueber Signal laufen, nicht direkt. Qt-Widgets
-    # duerfen nur vom Main-Thread erstellt/sichtbar gemacht werden — aus
+    # Overlay-Show/Hide MUSS über Signal laufen, nicht direkt. Qt-Widgets
+    # dürfen nur vom Main-Thread erstellt/sichtbar gemacht werden — aus
     # dem pynput-Listener-Callback (CGEventTap-Thread) direkt aufgerufen
     # crasht das mit SIGABRT in NSWindow-Init.
     overlay_recording_sig = Signal(bool)
-    # Wird gefeuert sobald die Tastenkombination geaendert wurde
-    # (egal ob aus Settings-View oder Tray-Submenu). SettingsView haengt
+    # Wird gefeuert sobald die Tastenkombination geändert wurde
+    # (egal ob aus Settings-View oder Tray-Submenu). SettingsView hängt
     # sich ran um ihr Label live zu aktualisieren — vorher gab's eine
     # stale Anzeige, weil das Label nur beim Settings-Init gerendert wurde.
     hotkey_changed = Signal(str)
-    # Analoge Signale fuer die anderen Settings — alle Pfade laufen ueber
+    # Analoge Signale für die anderen Settings — alle Pfade laufen über
     # _apply_whisper / _apply_language / _apply_ollama_model und feuern
     # diese Signals nach erfolgreichem Schreiben. SettingsView reagiert
     # mit Combo-Selection-Update, Tray rebuildet sein Submenu via
-    # rebuild_menu_sig (das aus den apply-Methoden mit ausgeloest wird).
+    # rebuild_menu_sig (das aus den apply-Methoden mit ausgelöst wird).
     whisper_changed = Signal(str)
     language_changed = Signal(object)  # str oder None
     ollama_model_changed = Signal(str)
@@ -3863,19 +3863,19 @@ class IQspeakrApp(QObject):
         )
         self.recording = False
         self.audio_frames = []
-        # Persistenter Audio-Stream: einmal geoeffnet, lebt bis zum Quit.
+        # Persistenter Audio-Stream: einmal geöffnet, lebt bis zum Quit.
         # Vermeidet PortAudio-Races bei rapidem open/close. CoreAudio-
-        # Stop/Close laeuft beim Quit im Hintergrund-Thread (Mac-Deadlock-
+        # Stop/Close läuft beim Quit im Hintergrund-Thread (Mac-Deadlock-
         # Regel: sd.InputStream.stop()/close() darf nicht im Main-Thread
-        # waehrend eines Callbacks laufen).
+        # während eines Callbacks laufen).
         self._persistent_stream = None
-        # Sperrt Listener kurzzeitig waehrend wir Cmd+V simulieren - sonst
+        # Sperrt Listener kurzzeitig während wir Cmd+V simulieren - sonst
         # sieht pynput die simulierten Keys als Hotkey-Press (Self-Trigger).
         self._suppress_listener = False
 
         # Pill-Overlay (QWidget) - im Main-Thread erzeugt, thread-safe via
         # Signals. KEIN show() hier - Overlay zeigt sich erst bei
-        # set_recording(True), sonst haengt es permanent transparent am
+        # set_recording(True), sonst hängt es permanent transparent am
         # unteren Bildschirmrand (User-Verwirrung).
         self.overlay = PillOverlay(enabled=self.config.get("overlay_enabled", True))
 
@@ -3917,11 +3917,11 @@ class IQspeakrApp(QObject):
         self.ollama_mgr.state_changed.connect(self._on_ollama_state_changed)
         self.main_window = None
 
-        # Tray-Icon ueber natives NSStatusItem (wie v1/rumps).
+        # Tray-Icon über natives NSStatusItem (wie v1/rumps).
         # WICHTIG: Creation muss NACH dem Start der Qt-Event-Loop laufen,
-        # sonst ueberschreibt Qts NSApplication-Init den Status-Item-
+        # sonst überschreibt Qts NSApplication-Init den Status-Item-
         # Registrierungspfad auf macOS 26 (Icon wird nie gerendert).
-        self.tray = None  # placeholder; wird in _init_native_tray befuellt
+        self.tray = None  # placeholder; wird in _init_native_tray befüllt
         self._menu = QMenu()
         self._build_menu()
         # singleShot(0) = erster Tick nach qapp.exec() startet
@@ -3950,9 +3950,9 @@ class IQspeakrApp(QObject):
         self.status_sig.connect(self._on_status)
         self.overlay_recording_sig.connect(self.overlay.set_recording)
 
-        # Dock-Click -> Hauptfenster oeffnen. macOS sendet QEvent.
-        # ApplicationActivate wenn die App den Fokus zurueckkriegt (Cmd+Tab,
-        # Klick aufs Dock-Icon, Klick aufs Tray). Wir oeffnen das Fenster
+        # Dock-Click -> Hauptfenster öffnen. macOS sendet QEvent.
+        # ApplicationActivate wenn die App den Fokus zurückkriegt (Cmd+Tab,
+        # Klick aufs Dock-Icon, Klick aufs Tray). Wir öffnen das Fenster
         # NUR wenn aktuell keins sichtbar ist - sonst poppt es bei jedem
         # Cmd+Tab unkontrolliert auf, was nervt.
         self.qapp.installEventFilter(self)
@@ -3960,20 +3960,20 @@ class IQspeakrApp(QObject):
         # Whisper-Modell laden (Thread)
         threading.Thread(target=self._load_model, daemon=True).start()
 
-        # Global Hotkey-Listener (pynput). Benoetigt Bedienungshilfen-
+        # Global Hotkey-Listener (pynput). Benötigt Bedienungshilfen-
         # Berechtigung auf macOS (Systemeinstellungen -> Datenschutz ->
         # Bedienungshilfen). Beim ersten Start kommt ein System-Prompt.
-        # Ohne Permission schmeisst pynput intern (im Listener-Thread) —
+        # Ohne Permission schmeißt pynput intern (im Listener-Thread) —
         # deshalb brauchen wir einen Watchdog, der den Listener-Zustand
-        # kurz nach dem Start prueft.
+        # kurz nach dem Start prüft.
         self._listener = None
         self._start_hotkey_listener()
-        # Watchdog: nach 1.5s pruefen, ob der Listener-Thread noch laeuft.
+        # Watchdog: nach 1.5s prüfen, ob der Listener-Thread noch läuft.
         # pynput stirbt bei fehlender Accessibility-Permission ggf. leise
         # (Objective-C Exception im Hintergrund-Thread).
         QTimer.singleShot(1500, self._check_listener_health)
 
-        # Hintergrund-Polling: prueft alle 3s, ob TCC inzwischen granted ist.
+        # Hintergrund-Polling: prüft alle 3s, ob TCC inzwischen granted ist.
         # Damit muss der User nach dem Schalter-Aktivieren NICHT zwingend
         # "Hab ich gemacht" klicken — App merkt's automatisch und startet
         # den Listener neu.
@@ -3996,15 +3996,15 @@ class IQspeakrApp(QObject):
         except Exception as e:
             # Typisch auf Mac bei fehlender Accessibility-Permission:
             # OSError oder ImportError aus Quartz. Wir loggen, zeigen
-            # dem User eine klare Fehlermeldung und oeffnen den
+            # dem User eine klare Fehlermeldung und öffnen den
             # System-Einstellungen-Dialog.
             log.exception(f"Hotkey-Listener konnte nicht starten: {e}")
             self._set_status("Hotkey deaktiviert (Accessibility?)")
             QTimer.singleShot(500, self._show_accessibility_hint)
 
     def _check_listener_health(self):
-        """Prueft ob der pynput-Listener Events kriegt. pynput nutzt auf macOS
-        CGEventTap — das braucht *Eingabeueberwachung* (Input Monitoring),
+        """Prüft ob der pynput-Listener Events kriegt. pynput nutzt auf macOS
+        CGEventTap — das braucht *Eingabeüberwachung* (Input Monitoring),
         NICHT Bedienungshilfen. Wir checken die korrekte TCC-Permission via
         CGPreflightListenEventAccess (CoreGraphics Public API)."""
         try:
@@ -4013,7 +4013,7 @@ class IQspeakrApp(QObject):
         except Exception:
             running, alive = False, False
 
-        # Input Monitoring (Eingabeueberwachung) — das ist was CGEventTap braucht
+        # Input Monitoring (Eingabeüberwachung) — das ist was CGEventTap braucht
         input_monitoring_ok = True
         try:
             from Quartz import CGPreflightListenEventAccess
@@ -4027,23 +4027,23 @@ class IQspeakrApp(QObject):
                 f"input_monitoring={input_monitoring_ok} -> "
                 "Eingabeueberwachung-Berechtigung fehlt."
             )
-            self._set_status("Hotkey deaktiviert (Eingabeueberwachung?)")
+            self._set_status("Hotkey deaktiviert (Eingabeüberwachung?)")
             self._show_accessibility_hint()
         else:
             log.info("Listener-Watchdog: Hotkey-Erkennung laeuft sauber.")
 
     def _show_accessibility_hint(self, manual_trigger=False):
-        """Schritt-fuer-Schritt-Wizard fuer Eingabeueberwachung
+        """Schritt-für-Schritt-Wizard für Eingabeüberwachung
         (Input Monitoring) — das ist was pynput's CGEventTap auf macOS
-        braucht. Oeffnet ausschliesslich den Eingabeueberwachung-Tab
+        braucht. Öffnet ausschließlich den Eingabeüberwachung-Tab
         (kein Finder mehr), zeigt klare Anleitung."""
         if getattr(self, "_accessibility_hint_shown", False) and not manual_trigger:
             return
         self._accessibility_hint_shown = True
 
-        # WICHTIG: Privacy_ListenEvent = Eingabeueberwachung,
+        # WICHTIG: Privacy_ListenEvent = Eingabeüberwachung,
         # NICHT Privacy_Accessibility = Bedienungshilfen. pynput braucht
-        # ersteres fuer globale Hotkeys via CGEventTap.
+        # ersteres für globale Hotkeys via CGEventTap.
         try:
             subprocess.Popen([
                 "open",
@@ -4054,34 +4054,34 @@ class IQspeakrApp(QObject):
             log.warning(f"System-Einstellungen konnten nicht geoeffnet werden: {e}")
 
         box = QMessageBox()
-        box.setWindowTitle("IQspeakr - Eingabeueberwachung aktivieren")
+        box.setWindowTitle("IQspeakr - Eingabeüberwachung aktivieren")
         box.setIcon(QMessageBox.Information)
         box.setText(
             "IQspeakr braucht ZWEI Berechtigungen, beide unter\n"
             "Datenschutz & Sicherheit:"
         )
         box.setInformativeText(
-            "1. EINGABEUEBERWACHUNG (fuer den globalen Hotkey)\n"
+            "1. EINGABEUEBERWACHUNG (für den globalen Hotkey)\n"
             "    So kommst du hin:\n"
-            "    Apple-Menue -> Systemeinstellungen -> Datenschutz & Sicherheit\n"
-            "    -> Eingabeueberwachung\n"
-            "    (Dieser Tab oeffnet sich gleich automatisch.)\n"
-            "    Dann: '+' Knopf -> Programme -> IQspeakr -> Oeffnen\n"
+            "    Apple-Menü -> Systemeinstellungen -> Datenschutz & Sicherheit\n"
+            "    -> Eingabeüberwachung\n"
+            "    (Dieser Tab öffnet sich gleich automatisch.)\n"
+            "    Dann: '+' Knopf -> Programme -> IQspeakr -> Öffnen\n"
             "    -> Schalter neben IQspeakr EIN.\n\n"
-            "2. BEDIENUNGSHILFEN (fuer Auto-Paste mit Cmd+V)\n"
+            "2. BEDIENUNGSHILFEN (für Auto-Paste mit Cmd+V)\n"
             "    So kommst du hin:\n"
-            "    Apple-Menue -> Systemeinstellungen -> Datenschutz & Sicherheit\n"
+            "    Apple-Menü -> Systemeinstellungen -> Datenschutz & Sicherheit\n"
             "    -> Bedienungshilfen\n"
             "    (Im selben Settings-Fenster: links in der Liste auf\n"
             "    'Bedienungshilfen' klicken.)\n"
-            "    Dann: '+' Knopf -> Programme -> IQspeakr -> Oeffnen\n"
+            "    Dann: '+' Knopf -> Programme -> IQspeakr -> Öffnen\n"
             "    -> Schalter neben IQspeakr EIN.\n\n"
-            "Mit TouchID/Passwort jeweils bestaetigen.\n\n"
+            "Mit TouchID/Passwort jeweils bestätigen.\n\n"
             "Dieses Fenster kannst du offen lassen — IQspeakr erkennt\n"
             "automatisch, sobald beide Schalter aktiv sind."
         )
         ok_btn = box.addButton("Hab ich gemacht", QMessageBox.AcceptRole)
-        later_btn = box.addButton("Spaeter", QMessageBox.RejectRole)
+        later_btn = box.addButton("Später", QMessageBox.RejectRole)
         box.setDefaultButton(ok_btn)
         box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
         box.exec()
@@ -4096,13 +4096,13 @@ class IQspeakrApp(QObject):
             self._start_hotkey_listener()
             QTimer.singleShot(1500, self._check_listener_health_after_grant)
         else:
-            # User klickt 'Spaeter' — Wizard nicht erneut zeigen in dieser
-            # Session. Re-Trigger geht ueber Tray-Menue.
+            # User klickt 'Später' — Wizard nicht erneut zeigen in dieser
+            # Session. Re-Trigger geht über Tray-Menü.
             log.info("User verschiebt Bedienungshilfen-Setup")
-            self._set_status("Bedienungshilfen fehlen - via Tray-Menue erneut einrichten")
+            self._set_status("Bedienungshilfen fehlen - via Tray-Menü erneut einrichten")
 
     def _check_listener_health_after_grant(self):
-        """Wird nach 'Hab ich gemacht' aufgerufen. Prueft Eingabeueberwachung
+        """Wird nach 'Hab ich gemacht' aufgerufen. Prüft Eingabeüberwachung
         (NICHT Bedienungshilfen). Wenn nicht erteilt: Notification, kein
         erneuter Wizard (kein Endlos-Loop)."""
         try:
@@ -4116,19 +4116,19 @@ class IQspeakrApp(QObject):
             self._set_status("")
             self._notify(
                 "IQspeakr",
-                "Eingabeueberwachung aktiv - Hotkey funktioniert jetzt.",
+                "Eingabeüberwachung aktiv - Hotkey funktioniert jetzt.",
             )
         else:
             log.warning("Trotz 'Hab ich gemacht': TCC sagt noch nicht trusted")
-            self._set_status("Eingabeueberwachung fehlt - via Tray-Menue erneut einrichten")
+            self._set_status("Eingabeüberwachung fehlt - via Tray-Menü erneut einrichten")
             self._notify(
-                "Eingabeueberwachung fehlt",
-                "Klicke aufs Tray-Icon und waehle 'Eingabeueberwachung einrichten' "
-                "fuer die Anleitung.",
+                "Eingabeüberwachung fehlt",
+                "Klicke aufs Tray-Icon und wähle 'Eingabeüberwachung einrichten' "
+                "für die Anleitung.",
             )
 
     def _trigger_accessibility_setup_manually(self):
-        """Wird vom Tray-Menue aufgerufen, damit der User den Wizard
+        """Wird vom Tray-Menü aufgerufen, damit der User den Wizard
         jederzeit erneut starten kann (ohne App-Neustart)."""
         self._accessibility_hint_shown = False
         self._show_accessibility_hint(manual_trigger=True)
@@ -4136,7 +4136,7 @@ class IQspeakrApp(QObject):
     def _poll_accessibility_status(self):
         """Wird alle 3s aufgerufen. Erkennt automatisch wenn eine der beiden
         Permissions erteilt wird:
-          - Eingabeueberwachung (CGPreflightListenEventAccess) -> Hotkey
+          - Eingabeüberwachung (CGPreflightListenEventAccess) -> Hotkey
           - Bedienungshilfen (AXIsProcessTrusted)               -> Cmd+V
         Listener wird neu gestartet, User per Notification informiert."""
         try:
@@ -4151,7 +4151,7 @@ class IQspeakrApp(QObject):
         if not hasattr(self, "_access_was_granted"):
             self._access_was_granted = access_now
 
-        # Eingabeueberwachung wurde gerade erteilt -> Listener neu starten
+        # Eingabeüberwachung wurde gerade erteilt -> Listener neu starten
         if input_now and not self._tcc_was_granted:
             log.info("Auto-Polling: Eingabeueberwachung wurde gerade erteilt!")
             self._tcc_was_granted = True
@@ -4170,7 +4170,7 @@ class IQspeakrApp(QObject):
             else:
                 self._notify(
                     "IQspeakr - Hotkey aktiv",
-                    "Fuer Auto-Paste fehlt noch 'Bedienungshilfen'. "
+                    "Für Auto-Paste fehlt noch 'Bedienungshilfen'. "
                     "Im selben Settings-Fenster aktivieren.",
                 )
         elif input_now:
@@ -4188,7 +4188,7 @@ class IQspeakrApp(QObject):
             else:
                 self._notify(
                     "IQspeakr - Auto-Paste aktiv",
-                    "Fuer Hotkey fehlt noch 'Eingabeueberwachung'. "
+                    "Für Hotkey fehlt noch 'Eingabeüberwachung'. "
                     "Im selben Settings-Fenster aktivieren.",
                 )
 
@@ -4196,7 +4196,7 @@ class IQspeakrApp(QObject):
         if self._tcc_was_granted and not input_now:
             log.warning("Auto-Polling: Eingabeueberwachung wurde entzogen")
             self._tcc_was_granted = False
-            self._set_status("Eingabeueberwachung fehlt")
+            self._set_status("Eingabeüberwachung fehlt")
         if self._access_was_granted and not access_now:
             log.warning("Auto-Polling: Bedienungshilfen wurde entzogen")
             self._access_was_granted = False
@@ -4206,7 +4206,7 @@ class IQspeakrApp(QObject):
     def _on_icon_state(self, state):
         if self.tray is None:
             return  # Tray wird deferred initialisiert — Zustand holt sich der
-                    # naechste Aufruf nach Init.
+                    # nächste Aufruf nach Init.
         try:
             self.tray.update_state(state)
         except Exception as e:
@@ -4228,7 +4228,7 @@ class IQspeakrApp(QObject):
                 pass
             self._splash = None
 
-    # Thin wrappers, damit Call-Sites wie vorher bleiben koennen.
+    # Thin wrappers, damit Call-Sites wie vorher bleiben können.
     def _set_icon_state(self, state):
         self.icon_state_sig.emit(state)
 
@@ -4254,22 +4254,22 @@ class IQspeakrApp(QObject):
         self.main_window.activateWindow()
 
     def eventFilter(self, obj, event):
-        """Dock-Click bzw. Cmd+Tab-zurueck: wenn die App ApplicationActivate
-        bekommt und aktuell kein Hauptfenster sichtbar ist, oeffnen wir's.
-        Sind schon Fenster da, lassen wir sie in Ruhe (User koennte gerade
+        """Dock-Click bzw. Cmd+Tab-zurück: wenn die App ApplicationActivate
+        bekommt und aktuell kein Hauptfenster sichtbar ist, öffnen wir's.
+        Sind schon Fenster da, lassen wir sie in Ruhe (User könnte gerade
         einen Dialog offen haben)."""
         if event.type() == QEvent.ApplicationActivate:
             mw = self.main_window
             if mw is None or not mw.isVisible() or mw.isMinimized():
-                # Im Worker-Thread sicher ueber Main-Thread queuen.
+                # Im Worker-Thread sicher über Main-Thread queuen.
                 QTimer.singleShot(0, self._show_main_window)
         return False  # nie konsumieren - andere Filter sollen weiter sehen
 
     def _on_ollama_state_changed(self, state):
         """Halte ollama_available im Sync mit dem Manager-State.
-        cleanup_enabled (Master-Switch) wird NICHT automatisch ueberschrieben
+        cleanup_enabled (Master-Switch) wird NICHT automatisch überschrieben
         - der User entscheidet das selbst in den Einstellungen. Wenn
-        cleanup aktiv ist aber Ollama nicht laeuft, fuegt _cleanup_text
+        cleanup aktiv ist aber Ollama nicht läuft, fügt _cleanup_text
         einfach den Whisper-Rohtext ein (no-op bei nicht-ready)."""
         self.ollama_available = (state == OLLAMA_READY)
         self.rebuild_menu_sig.emit()
@@ -4277,7 +4277,7 @@ class IQspeakrApp(QObject):
     def _reload_hotkey(self):
         """Re-applies den aktuellen Config-Wert komplett (parser, label,
         listener-restart). Backwards-Compat-Wrapper - der echte Setter
-        ist _apply_hotkey, beide Pfade laufen darueber."""
+        ist _apply_hotkey, beide Pfade laufen darüber."""
         self._apply_hotkey(self.config.get("hotkey", "ctrl+shift"), restart_listener=True)
 
     def _reload_whisper_model(self):
@@ -4287,15 +4287,15 @@ class IQspeakrApp(QObject):
         self._set_status(f"Lade Whisper '{self.config['whisper_model']}'...")
         threading.Thread(target=self._load_model, daemon=True).start()
 
-    # --- Menue-Bau ---
+    # --- Menü-Bau ---
 
     def _build_menu(self):
         """QMenu neu aufbauen. Wird bei jedem Config-Change aufgerufen."""
         self._menu.clear()
 
-        # Hauptfenster oeffnen - vor allen anderen Eintraegen, damit es
+        # Hauptfenster öffnen - vor allen anderen Einträgen, damit es
         # auf den ersten Blick erreichbar ist.
-        act_open = QAction("Hauptfenster oeffnen", self._menu)
+        act_open = QAction("Hauptfenster öffnen", self._menu)
         act_open.triggered.connect(lambda _=False: self._show_main_window())
         self._menu.addAction(act_open)
 
@@ -4312,14 +4312,14 @@ class IQspeakrApp(QObject):
 
         self._menu.addSeparator()
 
-        # KI-Bereinigung (nur wenn Ollama laeuft)
+        # KI-Bereinigung (nur wenn Ollama läuft)
         if self.ollama_available:
             lbl = f"KI-Bereinigung: {'An' if self.cleanup_enabled else 'Aus'}"
             act_cleanup = QAction(lbl, self._menu)
             act_cleanup.triggered.connect(lambda _=False: self.toggle_cleanup(None))
             self._menu.addAction(act_cleanup)
 
-        # Einstellungen-Untermenue
+        # Einstellungen-Untermenü
         settings = self._menu.addMenu("Einstellungen")
         self._build_hotkey_submenu(settings.addMenu("Tastenkombination"))
         self._build_whisper_submenu(settings.addMenu("Whisper-Modell (Spracherkennung)"))
@@ -4334,8 +4334,8 @@ class IQspeakrApp(QObject):
         status_act.setEnabled(False)
         self._menu.addAction(status_act)
 
-        # Eingabeueberwachung-Wizard manuell triggern
-        access_act = QAction("Eingabeueberwachung einrichten", self._menu)
+        # Eingabeüberwachung-Wizard manuell triggern
+        access_act = QAction("Eingabeüberwachung einrichten", self._menu)
         access_act.triggered.connect(lambda _=False: self._trigger_accessibility_setup_manually())
         self._menu.addAction(access_act)
 
@@ -4357,7 +4357,7 @@ class IQspeakrApp(QObject):
         # Windows-Version.
         # WICHTIG zur Reihenfolge: setChecked() MUSS nach addAction() in den
         # QActionGroup laufen. Bei exclusive=True wirft das Group jede
-        # Check-Aenderung VOR dem Beitritt weg, sobald ein zweites Action
+        # Check-Änderung VOR dem Beitritt weg, sobald ein zweites Action
         # die Gruppe betritt - dann steht im Tray das Haken auf der falschen
         # Position. Hier deshalb erst Group, dann setChecked.
         hotkey_options = ["ctrl+shift", "ctrl", "shift", "alt", "cmd"]
@@ -4380,7 +4380,7 @@ class IQspeakrApp(QObject):
         custom.triggered.connect(lambda _=False: self._custom_hotkey())
         group.addAction(custom)
         sub.addAction(custom)
-        # Wenn der aktuelle Hotkey keine Preset-Option ist, zaehlt er als "custom".
+        # Wenn der aktuelle Hotkey keine Preset-Option ist, zählt er als "custom".
         if not current_matched and current:
             custom.setText(f"Eigene Kombination: {hotkey_display(current)}...")
             custom.setChecked(True)
@@ -4395,8 +4395,8 @@ class IQspeakrApp(QObject):
         whisper_options = [
             ("tiny", "tiny - Sehr schnell, ungenauer (~75 MB)"),
             ("base", "base - Guter Kompromiss (~145 MB)"),
-            ("small", "small - Gute Qualitaet (~465 MB)"),
-            ("medium", "medium - Empfohlen, beste Qualitaet (~1.5 GB)"),
+            ("small", "small - Gute Qualität (~465 MB)"),
+            ("medium", "medium - Empfohlen, beste Qualität (~1.5 GB)"),
         ]
         group = QActionGroup(sub)
         group.setExclusive(True)
@@ -4411,9 +4411,9 @@ class IQspeakrApp(QObject):
     def _build_ollama_submenu(self, sub):
         ollama_options = [
             ("llama3.2", "llama3.2 - Klein & schnell (3B)"),
-            ("llama3.1", "llama3.1 - Bessere Qualitaet (8B)"),
-            ("mistral", "mistral - Gut fuer Deutsch/Europaeisch (7B)"),
-            ("gemma2", "gemma2 - Google, solide Qualitaet (9B)"),
+            ("llama3.1", "llama3.1 - Bessere Qualität (8B)"),
+            ("mistral", "mistral - Gut für Deutsch/Europäisch (7B)"),
+            ("gemma2", "gemma2 - Google, solide Qualität (9B)"),
             ("phi3", "phi3 - Microsoft, kompakt & gut (3.8B)"),
         ]
         group = QActionGroup(sub)
@@ -4453,20 +4453,20 @@ class IQspeakrApp(QObject):
         return cb
 
     def _apply_hotkey(self, hotkey_str, restart_listener=False):
-        """Single Source of Truth fuer Hotkey-Aenderungen. Egal aus welcher
+        """Single Source of Truth für Hotkey-Änderungen. Egal aus welcher
         UI-Stelle der Wert kommt (Tray-Submenu-Preset, Tray-Custom-Dialog,
-        Settings-Dialog) — alle Pfade muessen hier durch.
+        Settings-Dialog) — alle Pfade müssen hier durch.
 
         Macht in Reihenfolge:
           1. config schreiben + persistieren
           2. parser-State neu setzen (matchers, label, modifier_only)
-          3. State-Machine-Variablen reset (sonst haengt ein alter Hold)
+          3. State-Machine-Variablen reset (sonst hängt ein alter Hold)
           4. optional Listener neu starten (default nicht, der laufende
              Listener liest self.hotkey_matchers live)
           5. rebuild_menu_sig feuern -> Tray syncht den neuen Wert
           6. hotkey_changed feuern -> SettingsView aktualisiert ihr Label
-          7. Toast-Notification (nur wenn die Aenderung user-initiiert
-             aussieht — beim _reload_hotkey-Wrapper unterdruecken wir
+          7. Toast-Notification (nur wenn die Änderung user-initiiert
+             aussieht — beim _reload_hotkey-Wrapper unterdrücken wir
              sie via notify=False)
         """
         previous = self.config.get("hotkey")
@@ -4488,10 +4488,10 @@ class IQspeakrApp(QObject):
                 pass
             self._start_hotkey_listener()
         self._refresh_menu()
-        # Subscriber benachrichtigen (SettingsView hoert hier mit).
+        # Subscriber benachrichtigen (SettingsView hört hier mit).
         self.hotkey_changed.emit(hotkey_str)
-        # Toast nur bei echter Aenderung — beim Re-Apply via _reload_hotkey
-        # nach Permission-Grant ist der Wert unveraendert, kein Bedarf zu
+        # Toast nur bei echter Änderung — beim Re-Apply via _reload_hotkey
+        # nach Permission-Grant ist der Wert unverändert, kein Bedarf zu
         # nerven.
         if previous != hotkey_str:
             self._notify("IQspeakr", f"Neuer Hotkey: {self.hotkey_label} halten")
@@ -4510,7 +4510,7 @@ class IQspeakrApp(QObject):
         if matchers:
             self._apply_hotkey(hotkey_str)
         else:
-            self._notify("IQspeakr", f"Ungueltige Kombination: {hotkey_str}")
+            self._notify("IQspeakr", f"Ungültige Kombination: {hotkey_str}")
 
     def _make_whisper_callback(self, size):
         def cb(_checked=False):
@@ -4518,7 +4518,7 @@ class IQspeakrApp(QObject):
         return cb
 
     def _apply_whisper(self, size):
-        """SoT fuer Whisper-Modell-Wechsel. Tray-Submenu UND
+        """SoT für Whisper-Modell-Wechsel. Tray-Submenu UND
         SettingsView.whisper_combo laufen hier durch."""
         if size == self.config.get("whisper_model"):
             return
@@ -4547,7 +4547,7 @@ class IQspeakrApp(QObject):
         return cb
 
     def _apply_ollama_model(self, model_name):
-        """SoT fuer Ollama-Modell-Wechsel. KEIN Auto-Pull — der User
+        """SoT für Ollama-Modell-Wechsel. KEIN Auto-Pull — der User
         triggert den Download bewusst per Button in der Settings-View
         (NEEDS_MODEL-State im OllamaManager)."""
         if model_name == self.config.get("ollama_model"):
@@ -4556,11 +4556,11 @@ class IQspeakrApp(QObject):
         save_config(self.config)
         self._refresh_menu()
         self.ollama_model_changed.emit(model_name)
-        # Manager neu prueft - liefert READY (Modell schon da) oder
+        # Manager neu prüft - liefert READY (Modell schon da) oder
         # NEEDS_MODEL (User klickt dann den Pull-Button).
         if self.ollama_mgr.state() in (OLLAMA_READY, OLLAMA_NEEDS_MODEL):
             self.ollama_mgr.refresh_state(model_name)
-        self._notify("IQspeakr", f"Ollama-Modell geaendert: {model_name}")
+        self._notify("IQspeakr", f"Ollama-Modell geändert: {model_name}")
 
     def _make_lang_callback(self, lang_code):
         def cb(_checked=False):
@@ -4568,7 +4568,7 @@ class IQspeakrApp(QObject):
         return cb
 
     def _apply_language(self, lang_code):
-        """SoT fuer Sprach-Wechsel."""
+        """SoT für Sprach-Wechsel."""
         if lang_code == self.config.get("language"):
             return
         self.config["language"] = lang_code
@@ -4576,7 +4576,7 @@ class IQspeakrApp(QObject):
         self._refresh_menu()
         self.language_changed.emit(lang_code)
         lbl = "Automatisch" if lang_code is None else lang_code
-        self._notify("IQspeakr", f"Sprache geaendert: {lbl}")
+        self._notify("IQspeakr", f"Sprache geändert: {lbl}")
 
     def open_config(self, _sender):
         try:
@@ -4593,7 +4593,7 @@ class IQspeakrApp(QObject):
         # CoreAudio-Deadlock-Regel: stop()/close() auf sd.InputStream darf
         # nicht synchron im Main-Thread laufen. Im Hintergrund-Thread ist
         # es sicher. Qt.quit() wartet NICHT auf den Thread, aber das Prozess-
-        # Ende raeumt ihn trotzdem sauber ab (daemon).
+        # Ende räumt ihn trotzdem sauber ab (daemon).
         stream = self._persistent_stream
         self._persistent_stream = None
         if stream is not None:
@@ -4619,7 +4619,7 @@ class IQspeakrApp(QObject):
             # Device-Auswahl: Default CPU (stabil). MPS gibt's zwar auf
             # Apple Silicon und ist 3-5x schneller, crasht aber bei
             # openai-whisper in der qkv_attention-Schicht (Fatal Python
-            # error: Aborted). Opt-in moeglich via config.json
+            # error: Aborted). Opt-in möglich via config.json
             # "use_mps": true — wer es testen will kann das setzen.
             device = "cpu"
             if self.config.get("use_mps") and _HAS_TORCH:
@@ -4637,9 +4637,9 @@ class IQspeakrApp(QObject):
             self._notify("IQspeakr - Fehler", "Modell-Laden gescheitert. Siehe IQspeakr.log.")
             return
 
-        # Persistenten Audio-Stream oeffnen - bleibt bis zum Quit aktiv.
-        # WICHTIG: Nur EINMAL oeffnen. Bei Modell-Wechsel wird _load_model
-        # erneut gestartet — der bestehende Stream darf dann nicht ueber-
+        # Persistenten Audio-Stream öffnen - bleibt bis zum Quit aktiv.
+        # WICHTIG: Nur EINMAL öffnen. Bei Modell-Wechsel wird _load_model
+        # erneut gestartet — der bestehende Stream darf dann nicht über-
         # schrieben werden, sonst entstehen zwei konkurrierende Streams
         # die das Mikrofon teilen (Whisper liefert dann leere Strings).
         if self._persistent_stream is not None:
@@ -4657,9 +4657,9 @@ class IQspeakrApp(QObject):
             log.exception(f"Audio-Stream-Init-Fehler: {e}")
             self._set_status("Mikrofon-Fehler (Permission?)")
             self._notify(
-                "IQspeakr - Mikrofon noetig",
+                "IQspeakr - Mikrofon nötig",
                 "Mikrofon-Zugriff fehlt oder kein Mikro gefunden. "
-                "Systemeinstellungen > Datenschutz > Mikrofon pruefen, "
+                "Systemeinstellungen > Datenschutz > Mikrofon prüfen, "
                 "dann App neu starten.",
             )
             try:
@@ -4685,9 +4685,9 @@ class IQspeakrApp(QObject):
         self._notify(
             "IQspeakr - Modell geladen",
             f"Whisper '{self.config['whisper_model']}' ist bereit.\n"
-            f"{self.hotkey_label} gedrueckt halten = Aufnahme\n"
+            f"{self.hotkey_label} gedrückt halten = Aufnahme\n"
             f"{self.hotkey_label} 2x tippen = Daueraufnahme\n"
-            f"Tray -> Hauptfenster oeffnen fuer History/Stats/Style.",
+            f"Tray -> Hauptfenster öffnen für History/Stats/Style.",
         )
 
     def _cleanup_text(self, text):
@@ -4722,7 +4722,7 @@ class IQspeakrApp(QObject):
             # refresh_state ist asynchron — der State wird kurz danach via
             # state_changed-Signal in self.ollama_available reflektiert.
             # Wir reagieren auf den aktuellen Stand zum Klick-Zeitpunkt.
-            self._notify("IQspeakr", "Ollama laeuft nicht. Starte Ollama.app zuerst.")
+            self._notify("IQspeakr", "Ollama läuft nicht. Starte Ollama.app zuerst.")
             return
         self.cleanup_enabled = not self.cleanup_enabled
         self.config["cleanup_enabled"] = self.cleanup_enabled
@@ -4743,8 +4743,8 @@ class IQspeakrApp(QObject):
         return key == matcher
 
     def _key_belongs_to_hotkey(self, key):
-        """Prueft ob key zu IRGENDEINEM der Hotkey-Matcher gehoert -
-        sonst muellen wir _pressed_keys mit jeder Taste zu, die der User
+        """Prüft ob key zu IRGENDEINEM der Hotkey-Matcher gehört -
+        sonst müllen wir _pressed_keys mit jeder Taste zu, die der User
         tippt (Performance + Logik-Rauschen)."""
         for matcher in self.hotkey_matchers:
             if isinstance(matcher, set):
@@ -4764,7 +4764,7 @@ class IQspeakrApp(QObject):
                     return
                 was_matched_before = self._combo_matches()
                 self._pressed_keys.add(key)
-                # Erst wenn ALLE Modifier der Kombi gedrueckt sind UND der
+                # Erst wenn ALLE Modifier der Kombi gedrückt sind UND der
                 # Hold-Modus noch nicht aktiv ist -> Press triggern.
                 if not was_matched_before and self._combo_matches() and not self._hold_mode:
                     self._handle_modifier_press()
@@ -4787,7 +4787,7 @@ class IQspeakrApp(QObject):
                 self._pressed_keys.discard(key)
                 # Sobald EINE der Kombi-Tasten losgelassen wurde, gilt die
                 # Kombi als "losgelassen" (Release-Handler entscheidet dann
-                # ueber Hold/Tap/Double-Tap).
+                # über Hold/Tap/Double-Tap).
                 if was_matched_before and not self._combo_matches() and self._hold_mode:
                     self._handle_modifier_release()
                 return
@@ -4807,7 +4807,7 @@ class IQspeakrApp(QObject):
                     return False
         return True
 
-    # --- State-Machine fuer Einzel-Modifier-Hotkey (Hold/Tap/Double-Tap) ---
+    # --- State-Machine für Einzel-Modifier-Hotkey (Hold/Tap/Double-Tap) ---
 
     def _handle_modifier_press(self):
         now = _time.time()
@@ -4852,13 +4852,13 @@ class IQspeakrApp(QObject):
     def _audio_callback(self, indata, frames, time_info, status):
         """Wird vom persistenten Stream kontinuierlich aufgerufen (sounddevice
         worker-Thread). Sammelt Frames nur wenn recording, updated Overlay
-        ueber atomische Attribute."""
+        über atomische Attribute."""
         if status:
             log.warning(f"Audio-Status: {status}")
         if not self.recording:
             return
         self.audio_frames.append(indata.copy())
-        # Live-Levels fuer 7-Balken-Overlay (RMS + sqrt-Kurve).
+        # Live-Levels für 7-Balken-Overlay (RMS + sqrt-Kurve).
         samples = indata.flatten()
         n = len(samples)
         if n >= PillOverlay.BAR_COUNT:
@@ -4898,7 +4898,7 @@ class IQspeakrApp(QObject):
         self.overlay_recording_sig.emit(True)
 
     def _stop_recording(self):
-        self.recording = False  # Audio-Callback hoert sofort auf zu sammeln
+        self.recording = False  # Audio-Callback hört sofort auf zu sammeln
         self._set_icon_state("busy")
         log.info(f"Aufnahme gestoppt, {len(self.audio_frames)} Frames aufgenommen")
         self._refresh_menu()
@@ -4926,9 +4926,9 @@ class IQspeakrApp(QObject):
             log.info(f"Starte Whisper-Transkription (Sprache: {lang})...")
             try:
                 # openai-whisper nimmt das numpy-Array direkt — kein tempfile
-                # noetig. fp16=False, weil MPS in manchen Torch-Versionen
+                # nötig. fp16=False, weil MPS in manchen Torch-Versionen
                 # fp16-Probleme hat. beam_size=1 und condition_on_previous_text
-                # analog zur Windows-Version fuer Speed.
+                # analog zur Windows-Version für Speed.
                 result = self.model.transcribe(
                     audio_data,
                     language=lang,
@@ -4957,7 +4957,7 @@ class IQspeakrApp(QObject):
                     self.history.add(text)
                 except Exception as e:
                     log.warning(f"HistoryStore.add fehlgeschlagen: {e}")
-                # Stats fuer Dashboard: Wortanzahl + Aufnahmedauer.
+                # Stats für Dashboard: Wortanzahl + Aufnahmedauer.
                 try:
                     duration_sec = len(audio_data) / float(SAMPLE_RATE)
                     self.stats.record(
@@ -4977,13 +4977,13 @@ class IQspeakrApp(QObject):
             self._refresh_menu()
 
     def _paste_via_kb(self, text):
-        """Simuliert Cmd+V (Mac-Paste). Sperrt waehrenddessen den eigenen
+        """Simuliert Cmd+V (Mac-Paste). Sperrt währenddessen den eigenen
         pynput-Listener, damit der die simulierten Keys nicht als Hotkey-
         Press missdeutet (Self-Trigger-Bug)."""
         import time
         # Mini-Delay, damit das OS den Hotkey-Key-Up sauber verarbeitet hat
-        # bevor wir Cmd+V simulieren. 50 ms sind spuerbar schneller als die
-        # frueheren 300 ms und reichen in der Praxis.
+        # bevor wir Cmd+V simulieren. 50 ms sind spürbar schneller als die
+        # früheren 300 ms und reichen in der Praxis.
         time.sleep(0.05)
         self._suppress_listener = True
         try:
@@ -4996,37 +4996,37 @@ class IQspeakrApp(QObject):
             log.error(f"Paste-Fehler: {e}")
         finally:
             # Kleines Delay damit alle Key-Events durch sind, bevor
-            # Listener wieder zuhoert.
+            # Listener wieder zuhört.
             threading.Timer(0.15, self._unsuppress_listener).start()
         log.info(f"Eingefuegt: '{text}'")
 
     def _unsuppress_listener(self):
         self._suppress_listener = False
-        # Pressed-Keys-State zuruecksetzen, damit ein dort haengender
-        # Modifier nicht beim naechsten echten Press-Event hindert.
+        # Pressed-Keys-State zurücksetzen, damit ein dort hängender
+        # Modifier nicht beim nächsten echten Press-Event hindert.
         self._pressed_keys.clear()
 
 
 # =====================================================================
-#  Main-Entry: QApplication.exec() haelt den Main-Thread.
+#  Main-Entry: QApplication.exec() hält den Main-Thread.
 # =====================================================================
 
 def main():
     # multiprocessing.freeze_support ist auf macOS nicht zwingend
-    # (spawn-Start statt fork), kostet aber nix — mitnehmen fuer
+    # (spawn-Start statt fork), kostet aber nix — mitnehmen für
     # py2app-Bundles.
     import multiprocessing
     multiprocessing.freeze_support()
 
     log.info(f"main() start - Python {sys.version.split()[0]}")
 
-    # QApplication + Splash existieren bereits aus dem fruehen Bootstrap
-    # ganz oben in dieser Datei. Hier nur die Referenz uebernehmen.
+    # QApplication + Splash existieren bereits aus dem frühen Bootstrap
+    # ganz oben in dieser Datei. Hier nur die Referenz übernehmen.
     qapp = _qapp
     splash = _splash
     # v4: Dock-Icon ist da. LSUIElement ist aus dem Info.plist raus, der
-    # NSStatusItem-Tray laeuft als Subprocess (von Activation-Policy
-    # unabhaengig). Dock-Klick -> Hauptfenster: wird in IQspeakrApp via
+    # NSStatusItem-Tray läuft als Subprocess (von Activation-Policy
+    # unabhängig). Dock-Klick -> Hauptfenster: wird in IQspeakrApp via
     # QApplication.installEventFilter (ApplicationActivate) gehandelt.
 
     # Globales Theme + Schrift-Setup. Wirkt auf alle Widgets, die nach
@@ -5050,7 +5050,7 @@ def main():
         )
         sys.exit(1)
 
-    # Sicherheitsnetz: Splash spaetestens nach 30s schliessen, falls Status
+    # Sicherheitsnetz: Splash spätestens nach 30s schließen, falls Status
     # "Bereit" nie kommt (z.B. Modell-Lade-Fehler).
     QTimer.singleShot(30000, splash.close)
 
