@@ -34,6 +34,7 @@ for _p in _PATH_PARTS:
 import threading
 import subprocess
 import json
+import re
 import sqlite3
 import urllib.request
 import urllib.error
@@ -227,7 +228,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QInputDialog, QMainWindow,
     QDialog, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QDialogButtonBox,
     QListWidget, QListWidgetItem, QStackedWidget, QPushButton,
-    QCheckBox, QTextEdit, QPlainTextEdit, QProgressBar, QComboBox,
+    QCheckBox, QLineEdit, QTextEdit, QPlainTextEdit, QProgressBar, QComboBox,
     QFrame, QFormLayout, QSizePolicy, QScrollArea, QGroupBox,
 )
 from PySide6.QtGui import (
@@ -255,6 +256,10 @@ APP_ICON_PATH = os.path.join(APP_DIR, "IQspeakr.icns")
 HISTORY_PATH = os.path.join(USER_DIR, "history.json")
 HISTORY_MAX = 10
 STATS_DB_PATH = os.path.join(USER_DIR, "stats.db")
+# Wörterbuch: korrekte Schreibweisen für Eigennamen, die Whisper falsch
+# versteht (z.B. "IQspeakr" -> "Ich Sprecher"). Wird vor Ollama-Cleanup
+# angewendet.
+DICTIONARY_PATH = os.path.join(USER_DIR, "dictionary.json")
 
 os.makedirs(USER_DIR, exist_ok=True)
 if not os.path.exists(CONFIG_PATH) and os.path.exists(BUNDLE_CONFIG):
@@ -555,6 +560,13 @@ _LUCIDE_BAR_CHART = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height
 _LUCIDE_MIC = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>"""
 
 _LUCIDE_INFO = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>"""
+
+# Wörterbuch (Lucide "book-open"): aufgeschlagenes Buch — passt sowohl
+# semantisch (Glossar/Begriffe) als auch visuell zur Sidebar-Reihe.
+_LUCIDE_BOOK = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>"""
+_LUCIDE_PLUS = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>"""
+_LUCIDE_PENCIL = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>"""
+_LUCIDE_TRASH = """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>"""
 
 
 def _make_app_logo_pixmap(size=28):
@@ -1296,6 +1308,177 @@ class StatsStore(QObject):
             self.changed.emit()
             log.info(f"StatsStore: {n} Legacy-History-Eintraege migriert")
         return n
+
+
+# =====================================================================
+#  Wörterbuch: Eigennamen-Korrektur, die *immer* angewendet wird
+#  (vor Ollama-Cleanup). Persistiert als JSON-Liste in dictionary.json.
+#  Datenmodell pro Eintrag:
+#      {"correct": "IQspeakr", "variants": ["ich-sprecher", "ix speaker"]}
+# =====================================================================
+
+class DictionaryStore(QObject):
+    """Glossar von Eigennamen + falschen Whisper-Schreibungen. apply()
+    ersetzt im Whisper-Output alle Varianten case-insensitive durch die
+    korrekte Schreibweise. correct_names() liefert die Liste der Eigen-
+    namen, die der Cleanup-Prompt an Ollama mitschickt ("nicht kaputt
+    machen")."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._items = self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(DICTIONARY_PATH):
+                with open(DICTIONARY_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        cleaned = []
+                        for it in data:
+                            if not isinstance(it, dict):
+                                continue
+                            correct = (it.get("correct") or "").strip()
+                            variants = it.get("variants") or []
+                            if not correct or not isinstance(variants, list):
+                                continue
+                            v_clean = [v.strip() for v in variants
+                                       if isinstance(v, str) and v.strip()]
+                            if not v_clean:
+                                continue
+                            cleaned.append({"correct": correct,
+                                            "variants": v_clean})
+                        return cleaned
+        except Exception as e:
+            log.warning(f"DictionaryStore: Laden fehlgeschlagen: {e}")
+        return []
+
+    def _save(self):
+        try:
+            os.makedirs(USER_DIR, exist_ok=True)
+            with open(DICTIONARY_PATH, "w", encoding="utf-8") as f:
+                json.dump(self._items, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            log.warning(f"DictionaryStore: Speichern fehlgeschlagen: {e}")
+
+    def entries(self):
+        # Defensive Tiefkopie - Aufrufer sollen die interne Liste nicht
+        # versehentlich mutieren.
+        return [{"correct": e["correct"], "variants": list(e["variants"])}
+                for e in self._items]
+
+    def correct_names(self):
+        return [e["correct"] for e in self._items if e.get("correct")]
+
+    def find_by_correct(self, correct):
+        """Index des Eintrags mit gleicher korrekter Schreibweise (case-
+        insensitive), oder -1."""
+        target = (correct or "").strip().lower()
+        if not target:
+            return -1
+        for i, e in enumerate(self._items):
+            if e["correct"].lower() == target:
+                return i
+        return -1
+
+    def add(self, correct, variants):
+        """Neuen Eintrag anlegen. Ruft KEINE Duplicate-Check; UI muss vorher
+        find_by_correct nutzen und ggf. merge_variants aufrufen."""
+        correct = (correct or "").strip()
+        v_clean = [v.strip() for v in (variants or []) if v and v.strip()]
+        if not correct or not v_clean:
+            return False
+        # Dedupe Varianten innerhalb des Eintrags case-insensitive.
+        seen = set()
+        deduped = []
+        for v in v_clean:
+            if v.lower() in seen:
+                continue
+            seen.add(v.lower())
+            deduped.append(v)
+        self._items.append({"correct": correct, "variants": deduped})
+        self._save()
+        self.changed.emit()
+        return True
+
+    def update(self, idx, correct, variants):
+        if not (0 <= idx < len(self._items)):
+            return False
+        correct = (correct or "").strip()
+        v_clean = [v.strip() for v in (variants or []) if v and v.strip()]
+        if not correct or not v_clean:
+            return False
+        seen = set()
+        deduped = []
+        for v in v_clean:
+            if v.lower() in seen:
+                continue
+            seen.add(v.lower())
+            deduped.append(v)
+        self._items[idx] = {"correct": correct, "variants": deduped}
+        self._save()
+        self.changed.emit()
+        return True
+
+    def remove(self, idx):
+        if not (0 <= idx < len(self._items)):
+            return False
+        del self._items[idx]
+        self._save()
+        self.changed.emit()
+        return True
+
+    def merge_variants(self, idx, new_variants):
+        """Hängt neue Varianten an einen bestehenden Eintrag an (für den
+        'Eintrag existiert bereits'-Flow)."""
+        if not (0 <= idx < len(self._items)):
+            return False
+        existing = self._items[idx]
+        seen = {v.lower() for v in existing["variants"]}
+        added = []
+        for v in (new_variants or []):
+            v = (v or "").strip()
+            if not v or v.lower() in seen:
+                continue
+            seen.add(v.lower())
+            added.append(v)
+        if not added:
+            return False
+        existing["variants"].extend(added)
+        self._save()
+        self.changed.emit()
+        return True
+
+    def apply(self, text):
+        """Ersetzt alle Varianten im Text durch die jeweils korrekte
+        Schreibweise. Whole-word, case-insensitive. Längere Varianten
+        zuerst, damit Mehrwort-Phrasen nicht von kürzeren Substrings
+        gestohlen werden."""
+        if not text or not self._items:
+            return text
+        out = text
+        for entry in self._items:
+            correct = entry["correct"]
+            # Längste Variante zuerst (verhindert dass "IQ" früher matcht
+            # als "IQ Speaker", wenn beides definiert wäre).
+            variants = sorted(entry["variants"], key=len, reverse=True)
+            for variant in variants:
+                if variant.lower() == correct.lower():
+                    continue
+                try:
+                    pattern = re.compile(
+                        r"(?<!\w)" + re.escape(variant) + r"(?!\w)",
+                        re.IGNORECASE,
+                    )
+                    out = pattern.sub(correct, out)
+                except re.error:
+                    # Defensive: re.escape() macht das eigentlich unmöglich,
+                    # aber falls eine Variante doch mal Schrott enthält,
+                    # überspringen statt crashen.
+                    continue
+        return out
 
 
 # =====================================================================
@@ -3073,6 +3256,379 @@ class StyleView(QWidget):
 
 
 # =====================================================================
+#  Wörterbuch-View: Eigennamen-Liste + Editor-Dialog.
+#  Speichert/lädt über DictionaryStore, Replacement passiert im
+#  Audio-Thread direkt nach Whisper.
+# =====================================================================
+
+class DictionaryEditDialog(QDialog):
+    """Add/Edit-Dialog. Validiert beim OK: korrekte Schreibweise nicht
+    leer, mind. 1 Variante, Variante != korrekte Schreibweise. Liefert
+    {"correct": str, "variants": list[str]} via .result_data()."""
+
+    def __init__(self, parent=None, *, correct="", variants=None, edit_mode=False):
+        super().__init__(parent)
+        self.setWindowTitle("Eintrag bearbeiten" if edit_mode else "Neuer Wörterbuch-Eintrag")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(24, 22, 24, 18)
+        v.setSpacing(12)
+
+        head = QLabel("Korrekte Schreibweise")
+        head.setStyleSheet(f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;")
+        v.addWidget(head)
+
+        self._correct_edit = QLineEdit()
+        self._correct_edit.setPlaceholderText("z.B. IQspeakr")
+        self._correct_edit.setText(correct or "")
+        v.addWidget(self._correct_edit)
+
+        v.addSpacing(4)
+        var_lbl = QLabel("Varianten (eine pro Zeile)")
+        var_lbl.setStyleSheet(f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;")
+        v.addWidget(var_lbl)
+
+        hint = QLabel(
+            "Schreibweisen, die Whisper liefert und automatisch durch die "
+            "korrekte Schreibung ersetzt werden sollen."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        v.addWidget(hint)
+
+        self._variants_edit = QPlainTextEdit()
+        self._variants_edit.setPlaceholderText("ich-sprecher\nix speaker\nEichspeaker")
+        self._variants_edit.setMinimumHeight(120)
+        if variants:
+            self._variants_edit.setPlainText("\n".join(variants))
+        v.addWidget(self._variants_edit)
+
+        # Inline-Fehlerzeile, wird bei Validierungsfehler eingeblendet.
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet(
+            f"color: {THEME_DANGER}; font-size: 12px;"
+        )
+        self._error_lbl.setVisible(False)
+        v.addWidget(self._error_lbl)
+
+        v.addSpacing(4)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self._cancel_btn = QPushButton("Abbrechen")
+        self._cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self._cancel_btn)
+        self._ok_btn = QPushButton("Speichern")
+        self._ok_btn.setProperty("role", "primary")
+        self._ok_btn.setDefault(True)
+        self._ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(self._ok_btn)
+        v.addLayout(btn_row)
+
+        self._correct_edit.setFocus()
+
+    def _show_error(self, msg):
+        self._error_lbl.setText(msg)
+        self._error_lbl.setVisible(True)
+
+    def _on_ok(self):
+        correct = self._correct_edit.text().strip()
+        if not correct:
+            self._show_error("Korrekte Schreibweise darf nicht leer sein.")
+            self._correct_edit.setFocus()
+            return
+        # Varianten: Zeilen splitten, leer rausfiltern, dedupe (case-insensitive).
+        raw = self._variants_edit.toPlainText().splitlines()
+        variants = []
+        seen = set()
+        for line in raw:
+            v = line.strip()
+            if not v or v.lower() in seen:
+                continue
+            if v.lower() == correct.lower():
+                # Eine Variante darf nicht identisch zur korrekten
+                # Schreibweise sein - das wäre ein No-Op.
+                continue
+            seen.add(v.lower())
+            variants.append(v)
+        if not variants:
+            self._show_error(
+                "Mindestens eine Variante eintragen — und sie muss sich von "
+                "der korrekten Schreibweise unterscheiden."
+            )
+            self._variants_edit.setFocus()
+            return
+        self._result = {"correct": correct, "variants": variants}
+        self.accept()
+
+    def result_data(self):
+        return getattr(self, "_result", None)
+
+
+class _DictEntryCard(QFrame):
+    """Eine Card für einen Wörterbuch-Eintrag in der Liste. Zeigt korrekte
+    Schreibweise + Varianten-Pillen und reicht Edit/Delete an die View."""
+
+    edit_requested = Signal(int)
+    delete_requested = Signal(int)
+
+    CARD_QSS = (
+        f"#DictCard {{"
+        f" background: {THEME_BG_CARD};"
+        f" border: 1px solid {THEME_BORDER};"
+        f" border-radius: 12px;"
+        f"}}"
+        f"#DictCard:hover {{"
+        f" border-color: {THEME_BORDER_HOVER};"
+        f"}}"
+    )
+
+    PILL_QSS = (
+        f"QLabel#VariantPill {{"
+        f" background: {THEME_BG_INPUT};"
+        f" color: {THEME_TEXT_SECONDARY};"
+        f" border: 1px solid {THEME_BORDER};"
+        f" border-radius: 10px;"
+        f" padding: 3px 9px;"
+        f" font-size: 11px;"
+        f"}}"
+    )
+
+    def __init__(self, idx, correct, variants, parent=None):
+        super().__init__(parent)
+        self._idx = idx
+        self.setObjectName("DictCard")
+        self.setStyleSheet(self.CARD_QSS + self.PILL_QSS)
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(18, 14, 12, 14)
+        outer.setSpacing(14)
+
+        # Linke Spalte: Korrekte Schreibung + Varianten-Pillen.
+        left = QVBoxLayout()
+        left.setSpacing(8)
+
+        correct_lbl = QLabel(correct)
+        f = correct_lbl.font(); f.setPointSizeF(f.pointSizeF() + 2); f.setBold(True)
+        correct_lbl.setFont(f)
+        correct_lbl.setStyleSheet(f"color: {THEME_TEXT};")
+        left.addWidget(correct_lbl)
+
+        # Pillen für Varianten — flowen mit FlexLayout-Surrogat
+        # (HBoxLayout kann nicht umbrechen; wir nutzen eine simple
+        # Wrap-Implementierung über QGridLayout-ähnliche QHBoxLayouts).
+        pill_wrap = QWidget()
+        pw_layout = QHBoxLayout(pill_wrap)
+        pw_layout.setContentsMargins(0, 0, 0, 0)
+        pw_layout.setSpacing(6)
+        for v in variants:
+            pill = QLabel(v)
+            pill.setObjectName("VariantPill")
+            pw_layout.addWidget(pill)
+        pw_layout.addStretch(1)
+        left.addWidget(pill_wrap)
+        outer.addLayout(left, 1)
+
+        # Rechte Spalte: Edit + Delete als Icon-Buttons.
+        edit_btn = QPushButton()
+        edit_btn.setIcon(_lucide_icon(_LUCIDE_PENCIL, 16, THEME_TEXT_SECONDARY))
+        edit_btn.setFixedSize(32, 32)
+        edit_btn.setToolTip("Bearbeiten")
+        edit_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid transparent; border-radius: 6px; }"
+            f"QPushButton:hover {{ background: {THEME_BG_HOVER}; border-color: {THEME_BORDER}; }}"
+        )
+        edit_btn.clicked.connect(lambda: self.edit_requested.emit(self._idx))
+        outer.addWidget(edit_btn, 0, Qt.AlignTop)
+
+        del_btn = QPushButton()
+        del_btn.setIcon(_lucide_icon(_LUCIDE_TRASH, 16, THEME_TEXT_MUTED))
+        del_btn.setFixedSize(32, 32)
+        del_btn.setToolTip("Löschen")
+        del_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid transparent; border-radius: 6px; }"
+            f"QPushButton:hover {{ background: rgba(239, 68, 68, 0.10); border-color: {THEME_DANGER}; }}"
+        )
+        del_btn.clicked.connect(lambda: self.delete_requested.emit(self._idx))
+        outer.addWidget(del_btn, 0, Qt.AlignTop)
+
+
+class DictionaryView(QWidget):
+    """Liste aller Wörterbuch-Einträge + 'Neuer Eintrag'-Button. Reagiert
+    auf DictionaryStore.changed() und baut die Card-Liste neu auf."""
+
+    def __init__(self, app, parent=None):
+        super().__init__(parent)
+        self.app = app
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        scroll.setWidget(body)
+        v = QVBoxLayout(body)
+        v.setContentsMargins(36, 32, 36, 28)
+        v.setSpacing(16)
+
+        title = QLabel("Wörterbuch")
+        title.setProperty("role", "h1")
+        v.addWidget(title)
+
+        sub = QLabel(
+            "Korrigiere Eigennamen, die Whisper häufig falsch versteht. "
+            "Wird vor jeder weiteren Bearbeitung angewendet."
+        )
+        sub.setProperty("role", "sub")
+        sub.setWordWrap(True)
+        v.addWidget(sub)
+        v.addSpacing(8)
+
+        # Add-Button-Reihe (oberhalb der Liste).
+        action_row = QHBoxLayout()
+        self._add_btn = QPushButton("  Eintrag hinzufügen")
+        self._add_btn.setIcon(_lucide_icon(_LUCIDE_PLUS, 16, "#FFFFFF"))
+        self._add_btn.setProperty("role", "primary")
+        self._add_btn.setMinimumHeight(34)
+        self._add_btn.clicked.connect(self._on_add_clicked)
+        action_row.addWidget(self._add_btn)
+        action_row.addStretch(1)
+        v.addLayout(action_row)
+
+        v.addSpacing(4)
+
+        # Stack: Empty-State <-> Card-Liste.
+        self._stack = QStackedWidget()
+        v.addWidget(self._stack, 1)
+
+        # Empty-State.
+        empty_page = QWidget()
+        ep = QVBoxLayout(empty_page)
+        ep.setContentsMargins(0, 0, 0, 0)
+        ep.addStretch(1)
+        empty_lbl = QLabel(
+            "Noch keine Einträge.\nLege deinen ersten Eigennamen an, "
+            "damit Whisper-Fehlschreibungen automatisch korrigiert werden."
+        )
+        empty_lbl.setAlignment(Qt.AlignCenter)
+        empty_lbl.setWordWrap(True)
+        empty_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 13px;")
+        ep.addWidget(empty_lbl)
+        ep.addStretch(2)
+        self._stack.addWidget(empty_page)
+
+        # List-Page: vertikal gestapelte Cards in eigener ScrollArea.
+        # (Die äußere ScrollArea fängt die ganze Seite, die innere wäre
+        # redundant - wir nutzen ein simples QVBoxLayout mit Stretch.)
+        list_page = QWidget()
+        lp = QVBoxLayout(list_page)
+        lp.setContentsMargins(0, 0, 0, 0)
+        lp.setSpacing(10)
+        self._list_layout = lp
+        lp.addStretch(1)
+        self._stack.addWidget(list_page)
+
+        self._refresh()
+        self.app.dictionary.changed.connect(self._refresh)
+
+    def _clear_list(self):
+        # Alle Cards entfernen, Stretch am Ende beibehalten.
+        layout = self._list_layout
+        while layout.count() > 1:
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _refresh(self):
+        self._clear_list()
+        entries = self.app.dictionary.entries()
+        if not entries:
+            self._stack.setCurrentIndex(0)
+            return
+        self._stack.setCurrentIndex(1)
+        for i, e in enumerate(entries):
+            card = _DictEntryCard(i, e["correct"], e["variants"])
+            card.edit_requested.connect(self._on_edit)
+            card.delete_requested.connect(self._on_delete)
+            # Vor dem Stretch (letzter Item) einfügen.
+            self._list_layout.insertWidget(self._list_layout.count() - 1, card)
+
+    def _on_add_clicked(self):
+        dlg = DictionaryEditDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        data = dlg.result_data()
+        if not data:
+            return
+        # Duplicate-Check: existiert ein Eintrag mit gleicher korrekter
+        # Schreibweise schon? Falls ja: nicht doppelt anlegen, sondern
+        # User fragen ob die neuen Varianten an den Bestand angehängt
+        # werden sollen.
+        existing_idx = self.app.dictionary.find_by_correct(data["correct"])
+        if existing_idx >= 0:
+            box = QMessageBox(self)
+            box.setWindowTitle("Eintrag existiert bereits")
+            box.setIcon(QMessageBox.Question)
+            box.setText(
+                f"Für „{data['correct']}“ gibt es bereits einen Eintrag. "
+                "Möchtest du die neuen Varianten an den bestehenden Eintrag "
+                "anhängen?"
+            )
+            yes = box.addButton("Anhängen", QMessageBox.AcceptRole)
+            box.addButton("Abbrechen", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is yes:
+                self.app.dictionary.merge_variants(existing_idx, data["variants"])
+            return
+        self.app.dictionary.add(data["correct"], data["variants"])
+
+    def _on_edit(self, idx):
+        entries = self.app.dictionary.entries()
+        if not (0 <= idx < len(entries)):
+            return
+        e = entries[idx]
+        dlg = DictionaryEditDialog(
+            self, correct=e["correct"], variants=e["variants"], edit_mode=True,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        data = dlg.result_data()
+        if not data:
+            return
+        # Bei Änderung der korrekten Schreibweise auf einen anderen
+        # bestehenden Eintrag: Konflikt anzeigen, nicht überschreiben.
+        conflict = self.app.dictionary.find_by_correct(data["correct"])
+        if conflict >= 0 and conflict != idx:
+            QMessageBox.warning(
+                self, "Konflikt",
+                f"„{data['correct']}“ ist bereits in einem anderen "
+                "Eintrag belegt. Lösche oder bearbeite zuerst den anderen "
+                "Eintrag.",
+            )
+            return
+        self.app.dictionary.update(idx, data["correct"], data["variants"])
+
+    def _on_delete(self, idx):
+        entries = self.app.dictionary.entries()
+        if not (0 <= idx < len(entries)):
+            return
+        correct = entries[idx]["correct"]
+        ans = QMessageBox.question(
+            self, "Eintrag löschen",
+            f"Eintrag „{correct}“ wirklich löschen?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ans == QMessageBox.Yes:
+            self.app.dictionary.remove(idx)
+
+
+# =====================================================================
 #  Settings-View: Hotkey, Whisper, Sprache + Ollama-State-Maschine.
 # =====================================================================
 
@@ -3596,9 +4152,10 @@ class SettingsView(QWidget):
 class MainWindow(QMainWindow):
     # (key, label, lucide-svg). Reihenfolge = UI-Reihenfolge.
     NAV_ITEMS = [
-        ("home",      "Home",      _LUCIDE_HOME),
-        ("dashboard", "Dashboard", _LUCIDE_BAR_CHART),
-        ("style",     "Style",     _LUCIDE_TYPE),
+        ("home",       "Home",       _LUCIDE_HOME),
+        ("dashboard",  "Dashboard",  _LUCIDE_BAR_CHART),
+        ("style",      "Style",      _LUCIDE_TYPE),
+        ("dictionary", "Wörterbuch", _LUCIDE_BOOK),
     ]
 
     # Sidebar-QSS: 11/14-Padding, 6px-Radius, Hover-Tint, Active mit
@@ -3747,15 +4304,20 @@ class MainWindow(QMainWindow):
         self.home_view = HomeView(self.app)
         self.dashboard_view = DashboardView(self.app)
         self.style_view = StyleView(self.app, on_jump_to_settings=self._goto_settings)
+        self.dictionary_view = DictionaryView(self.app)
         self.settings_view = SettingsView(self.app)
 
         self._stack.addWidget(self.home_view)
         self._stack.addWidget(self.dashboard_view)
         self._stack.addWidget(self.style_view)
+        self._stack.addWidget(self.dictionary_view)
         self._stack.addWidget(self.settings_view)
 
         # Mapping nav-key -> stack-index
-        self._nav_idx = {"home": 0, "dashboard": 1, "style": 2, "settings": 3}
+        self._nav_idx = {
+            "home": 0, "dashboard": 1, "style": 2,
+            "dictionary": 3, "settings": 4,
+        }
 
         self._sidebar.currentRowChanged.connect(self._on_top_nav_changed)
         self._settings_list.itemClicked.connect(self._on_settings_clicked)
@@ -3901,12 +4463,14 @@ class IQspeakrApp(QObject):
 
         self._status_text = "Modell wird geladen..."
 
-        # History + Stats + Ollama-Manager. main_window wird lazy beim
-        # ersten Open instanziiert (siehe _show_main_window). HistoryStore
-        # und StatsStore haben eigene Qt-Signals, an die HomeView /
-        # DashboardView sich binden, um sich automatisch zu refreshen.
+        # History + Stats + Wörterbuch + Ollama-Manager. main_window wird
+        # lazy beim ersten Open instanziiert (siehe _show_main_window).
+        # HistoryStore, StatsStore und DictionaryStore emittieren Qt-Signals,
+        # an die HomeView / DashboardView / DictionaryView sich binden, um
+        # sich automatisch zu refreshen.
         self.history = HistoryStore(self)
         self.stats = StatsStore(self)
+        self.dictionary = DictionaryStore(self)
         try:
             n = self.stats.import_legacy_history(self.history.items())
             if n:
@@ -4698,6 +5262,23 @@ class IQspeakrApp(QObject):
             return text
         try:
             prompt_template = get_cleanup_prompt(self.config)
+            # Eigennamen aus dem Wörterbuch in den Prompt einbetten, damit
+            # Ollama die nicht versehentlich umformatiert/transliteriert.
+            # Wir hängen den Hinweis vor dem "Text:"-Block ein, so dass er
+            # direkt vor dem zu bereinigenden Text steht.
+            names = self.dictionary.correct_names()
+            if names:
+                keep_line = (
+                    "WICHTIG: Behalte die folgenden Eigennamen exakt so wie "
+                    "sie sind (Schreibweise, Groß-/Kleinschreibung): "
+                    + ", ".join(names) + "."
+                )
+                if "Text: {text}" in prompt_template:
+                    prompt_template = prompt_template.replace(
+                        "Text: {text}", keep_line + "\n\nText: {text}",
+                    )
+                else:
+                    prompt_template = keep_line + "\n\n" + prompt_template
             payload = json.dumps({
                 "model": self.config["ollama_model"],
                 "prompt": prompt_template.format(text=text),
@@ -4945,7 +5526,13 @@ class IQspeakrApp(QObject):
                 return
 
             if raw_text:
-                text = self._cleanup_text(raw_text)
+                # Wörterbuch IMMER zuerst — auch ohne Ollama. Ollama bekommt
+                # die korrigierten Schreibweisen + den Hinweis sie nicht
+                # anzufassen (siehe _cleanup_text).
+                dict_text = self.dictionary.apply(raw_text)
+                if dict_text != raw_text:
+                    log.info(f"Wörterbuch-Korrektur: '{raw_text}' -> '{dict_text}'")
+                text = self._cleanup_text(dict_text)
                 log.info(f"Bereinigter Text: '{text}'")
                 pyperclip.copy(text)
                 log.info("Text in Zwischenablage kopiert")
