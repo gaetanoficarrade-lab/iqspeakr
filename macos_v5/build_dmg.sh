@@ -83,13 +83,25 @@ cp "$PROJECT_DIR/requirements.txt" "$INSTALLER_APP/Contents/Resources/"
 # auf das Bundle (com.iqspeakr.app) mappt. Bash-Skripte als Bundle-
 # Hauptbinary fuehren bei Tahoe zu Identity-Mapping auf den exec'd
 # Python-Subprocess — und damit zu unzuverlaessigen TCC-Permissions.
+#
+# v5: Build deterministisch machen, damit der cdhash ueber Rebuilds
+# stabil bleibt. Andernfalls erzeugt clang bei jedem Lauf eine neue
+# zufaellige LC_UUID -> neuer cdhash -> TCC sieht jede neu installierte
+# IQspeakr.app als unbekannte App und verwirft die zuvor gewaehrten
+# Bedienungshilfen/Eingabeueberwachungs-Permissions. Drei Massnahmen:
+#   -Wl,-no_uuid     Linker setzt keine zufaellige UUID
+#   strip -S         entfernt Debug- und lokale Symbole (Build-Pfade)
+#   codesign --identifier com.iqspeakr.app   stabile Sig-Identity
 LAUNCHER_BIN="$PROJECT_DIR/build/launcher"
 mkdir -p "$PROJECT_DIR/build"
-echo "  ▸ Kompiliere C-Launcher (arm64)..."
-clang -O2 -arch arm64 -o "$LAUNCHER_BIN" "$PROJECT_DIR/launcher.c"
+echo "  ▸ Kompiliere C-Launcher (arm64, deterministisch)..."
+clang -O2 -arch arm64 -Wl,-no_uuid -o "$LAUNCHER_BIN" "$PROJECT_DIR/launcher.c"
+strip -S "$LAUNCHER_BIN"
+codesign -fs - --identifier com.iqspeakr.app "$LAUNCHER_BIN"
 cp "$LAUNCHER_BIN" "$INSTALLER_APP/Contents/Resources/launcher"
 chmod +x "$INSTALLER_APP/Contents/Resources/launcher"
 echo "  ✓ Launcher kompiliert + ins DMG kopiert ($(file "$INSTALLER_APP/Contents/Resources/launcher" | awk -F: '{print $2}'))"
+echo "  ✓ cdhash: $(codesign -dvv "$LAUNCHER_BIN" 2>&1 | grep CDHash | awk '{print $2}')"
 
 # Icon: v5 liefert IQspeakr.icns mit — wird sowohl fuer Installer als auch
 # fuer die spaeter installierte App verwendet.
