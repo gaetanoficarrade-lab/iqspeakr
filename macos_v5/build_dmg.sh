@@ -95,13 +95,42 @@ cp "$PROJECT_DIR/requirements.txt" "$INSTALLER_APP/Contents/Resources/"
 LAUNCHER_BIN="$PROJECT_DIR/build/launcher"
 mkdir -p "$PROJECT_DIR/build"
 echo "  ▸ Kompiliere C-Launcher (arm64, deterministisch)..."
-clang -O2 -arch arm64 -Wl,-no_uuid -o "$LAUNCHER_BIN" "$PROJECT_DIR/launcher.c"
+# Schritt 1: Normaler Build mit randomisierter LC_UUID. Wichtig:
+# -Wl,-no_uuid ist KEINE Option — macOS Tahoe dyld weigert sich,
+# Binaries ohne LC_UUID Load Command zu laden ("missing LC_UUID"-Crash).
+clang -O2 -arch arm64 -o "$LAUNCHER_BIN" "$PROJECT_DIR/launcher.c"
+# Schritt 2: Debug- und lokale Symbole entfernen — sonst stehen die
+# absoluten Build-Pfade (z.B. /Users/.../macos_v5/launcher.c) im Mach-O
+# und veraendern den cdhash zwischen Maschinen.
 strip -S "$LAUNCHER_BIN"
+# Schritt 3: LC_UUID durch eine vom launcher.c-Hash abgeleitete UUID
+# ersetzen. Ergebnis: ueber Rebuilds hinweg byte-identisches Binary,
+# stabiler cdhash, und macOS Tahoe TCC behandelt jede neue Installation
+# als die *gleiche* IQspeakr-App -> Bedienungshilfen/Eingabeueberwachung
+# bleiben gewaehrt. Wenn launcher.c sich tatsaechlich aendert, aendert
+# sich die UUID gewollt -> TCC ankert dann sauber auf die neue Identitaet.
+SOURCE_HASH="$(shasum -a 256 "$PROJECT_DIR/launcher.c" | awk '{print $1}')"
+python3 - "$LAUNCHER_BIN" "$SOURCE_HASH" << 'PYEOF'
+import hashlib, sys
+path, seed = sys.argv[1], sys.argv[2]
+uuid_bytes = hashlib.md5(seed.encode()).digest()  # 16 Byte = LC_UUID
+with open(path, "r+b") as f:
+    data = f.read(8192)  # Suche nur im Load-Commands-Bereich
+    # LC_UUID = 0x1b, cmdsize = 24 (0x18). Little-endian uint32-Pair:
+    idx = data.find(b"\x1b\x00\x00\x00\x18\x00\x00\x00")
+    if idx < 0:
+        print("LC_UUID Load Command nicht gefunden", file=sys.stderr)
+        sys.exit(1)
+    f.seek(idx + 8)  # cmd + cmdsize ueberspringen
+    f.write(uuid_bytes)
+PYEOF
+# Schritt 4: Adhoc-Re-Sign mit stabiler Identitaet (com.iqspeakr.app
+# statt dem Default "launcher" — TCC nutzt diesen String fuer Lookups).
 codesign -fs - --identifier com.iqspeakr.app "$LAUNCHER_BIN"
 cp "$LAUNCHER_BIN" "$INSTALLER_APP/Contents/Resources/launcher"
 chmod +x "$INSTALLER_APP/Contents/Resources/launcher"
 echo "  ✓ Launcher kompiliert + ins DMG kopiert ($(file "$INSTALLER_APP/Contents/Resources/launcher" | awk -F: '{print $2}'))"
-echo "  ✓ cdhash: $(codesign -dvv "$LAUNCHER_BIN" 2>&1 | grep CDHash | awk '{print $2}')"
+echo "  ✓ Launcher SHA256: $(shasum -a 256 "$LAUNCHER_BIN" | awk '{print $1}')"
 
 # Icon: v5 liefert IQspeakr.icns mit — wird sowohl fuer Installer als auch
 # fuer die spaeter installierte App verwendet.
