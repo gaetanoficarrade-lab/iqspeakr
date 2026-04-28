@@ -2903,6 +2903,12 @@ class StyleView(QWidget):
         self._lock_text.setAlignment(Qt.AlignCenter)
         self._lock_text.setStyleSheet(f"color: {THEME_TEXT_SECONDARY};")
         self._lock_text.setWordWrap(True)
+        # Mind. 4 Zeilen reservieren: lock_box wird via Qt.AlignCenter mit
+        # seinem sizeHint platziert, das beim Konstruieren mit leerem Text
+        # entsteht. Ohne diese Reservierung wird der Hinweistext nach dem
+        # spaeteren setText() abgeschnitten.
+        fm = self._lock_text.fontMetrics()
+        self._lock_text.setMinimumHeight(fm.lineSpacing() * 4)
         lb_layout.addWidget(self._lock_text)
         lb_layout.addSpacing(6)
 
@@ -3048,8 +3054,8 @@ class StyleView(QWidget):
         if not ready:
             self._lock_text.setText(
                 "Ollama ist nicht aktiv. Aktiviere die KI-Textbereinigung "
-                "in den Einstellungen, dann schaltet sich der Schreibstil-"
-                "Editor frei."
+                "in den Einstellungen, dann schaltet sich der Schreibstil "
+                "automatisch frei."
             )
         else:
             self._lock_text.setText(
