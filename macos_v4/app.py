@@ -2583,7 +2583,7 @@ class HeatmapWidget(QWidget):
                     last_month = day.month
                     x = self.LEFT_PAD + col * (self.CELL + self.GAP)
                     p.drawText(x, self.TOP_PAD - 8,
-                               ["Jan", "Feb", "Maer", "Apr", "Mai", "Jun",
+                               ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
                                 "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"][day.month - 1])
                     break
 
@@ -2726,6 +2726,13 @@ class DashboardView(QWidget):
         heat_scroll.setFrameShape(QFrame.NoFrame)
         heat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         heat_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # QScrollArea hat einen winzigen Default-sizeHint (~70 px). Im
+        # aeusseren VBox-Layout wuerde die Card sonst auf diese Hoehe
+        # zerquetscht und die Heatmap durch widgetResizable+ScrollBarOff
+        # vertikal abgeschnitten. minimumHeight (kein fixed) so setzen,
+        # dass alle 7 Reihen + Legende reinpassen - Card darf weiterhin
+        # mit Inhalt wachsen.
+        heat_scroll.setMinimumHeight(self._heatmap.minimumHeight())
         heat_scroll.setStyleSheet(
             "QScrollArea { background: transparent; }"
             "QScrollArea > QWidget > QWidget { background: transparent; }"
