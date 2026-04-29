@@ -4025,9 +4025,8 @@ class MainWindow(QMainWindow):
             f"}}"
         )
         sw_layout = QVBoxLayout(sidebar_wrap)
-        # Unten ein bisschen Luft, damit Settings nicht direkt auf der
-        # Fensterkante klebt.
-        sw_layout.setContentsMargins(0, 0, 0, 14)
+        # Unten Luft, damit Settings nicht direkt auf der Fensterkante klebt.
+        sw_layout.setContentsMargins(0, 0, 0, 20)
         sw_layout.setSpacing(0)
 
         # --- Sidebar-Header (Logo + App-Name) ---
@@ -4083,10 +4082,11 @@ class MainWindow(QMainWindow):
         self._settings_list = QListWidget()
         self._settings_list.setObjectName("SidebarNav")
         self._settings_list.setStyleSheet(self.SIDEBAR_LIST_QSS)
-        # 64px statt 54: List-Padding (16) + Item-Margin (4) + Item-Padding
-        # (22) + Content (~18) = 60. 54 schnitt den Active-State-Hintergrund
-        # (mit border-radius) am unteren Rand ab.
-        self._settings_list.setFixedHeight(64)
+        # 78px: Item-Render-Höhe ~52, dazu 8px List-Pad-Top + 18px Spielraum
+        # nach unten. Gibt dem Active-State-Hintergrund (border-radius 6)
+        # vollständig Platz und lässt das Item visuell etwas höher sitzen
+        # statt direkt am Fensterrand zu kleben.
+        self._settings_list.setFixedHeight(78)
         self._settings_list.setFocusPolicy(Qt.NoFocus)
         self._settings_list.setFrameShape(QFrame.NoFrame)
         self._settings_list.setIconSize(QSize(18, 18))
