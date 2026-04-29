@@ -1,0 +1,7 @@
+{
+  "hotkey": "ctrl",
+  "whisper_model": "small",
+  "ollama_model": "llama3.2",
+  "cleanup_enabled": true,
+  "language": "de"
+}

@@ -23,6 +23,10 @@ dist/
 # Local logs
 *.log
 
+# Runtime user data (config, history, stats DB — entstehen wenn die App
+# vom Repo-Verzeichnis aus gestartet wird; gehoeren nicht ins Repo)
+/IQspeakr/
+
 # OS/editor
 .idea/
 .vscode/
