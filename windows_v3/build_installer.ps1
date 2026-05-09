@@ -62,7 +62,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$SetupExe = Join-Path $ProjectDir "dist\IQspeakr-Setup.exe"
+$SetupExe = Get-ChildItem (Join-Path $ProjectDir "dist") -Filter "IQspeakr-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 if (Test-Path $SetupExe) {
     $size = [math]::Round((Get-Item $SetupExe).Length / 1MB, 1)
     Write-Host ""
