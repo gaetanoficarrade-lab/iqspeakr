@@ -6,15 +6,16 @@ IQspeakr - Lokale Sprache-zu-Text App für Windows
 
 import os
 
-# WICHTIG: Vor torch/whisper-Import setzen. In PyInstaller-Bundles führt
-# MKL's default multi-threaded Thread-Pool bei wiederholtem transcribe()
-# zuverlässig zu Access Violations (0xc0000005 / 0xc0000096). Single-Thread
-# kostet bei small-Whisper nur ~0.1-0.3s pro Aufnahme, dafür stabil.
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("MKL_THREADING_LAYER", "SEQUENTIAL")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+# faster-whisper nutzt CTranslate2 (kein torch/MKL). Der frühere
+# OMP_NUM_THREADS=1-Fix war für openai-whisper+PyTorch nötig (Access
+# Violation 0xc0000005 bei wiederholtem transcribe). Mit CTranslate2
+# entfällt diese Einschränkung — cpu_threads im WhisperModel-Konstruktor
+# steuert den Thread-Pool direkt und sicher. OMP bleibt auf 4 damit
+# BLAS-Operationen innerhalb von CTranslate2 mehrere Threads nutzen.
+_CT2_THREADS = str(min(8, os.cpu_count() or 4))
+os.environ.setdefault("OMP_NUM_THREADS", _CT2_THREADS)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _CT2_THREADS)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", _CT2_THREADS)
 
 import threading
 import subprocess
@@ -238,15 +239,20 @@ THEME_BG_HOVER      = "rgba(255, 255, 255, 0.05)"
 THEME_BORDER        = "#2A2D35"
 THEME_BORDER_HOVER  = "#3A3F4A"
 THEME_BORDER_SOFT   = "rgba(255, 255, 255, 0.06)"
-THEME_TEXT          = "#F1F5F9"   # heller, kontrastreicher Body-Text
-THEME_TEXT_SECONDARY = "#CBD5E1"  # Form-Labels, Sub-Texte
-THEME_TEXT_MUTED    = "#8C92A0"   # Meta / Timestamps
-THEME_ACCENT        = "#6366F1"   # Indigo
+THEME_TEXT          = "#F1F5F9"   # 12.6:1 on BG — AAA
+THEME_TEXT_SECONDARY = "#CBD5E1"  # 9.9:1 on BG — AAA
+THEME_TEXT_MUTED    = "#8C92A0"   # 5.8:1 on BG — AA
+# THEME_ACCENT als Hintergrundfarbe (Primary-Buttons, Checkboxen, Progress):
+# Weiß darauf = 4.54:1 → AA-konform für normalen Text.
+THEME_ACCENT        = "#6366F1"
+# THEME_ACCENT_TEXT für Akzentfarbe ALS Text auf dunklem Hintergrund:
+# #818CF8 ergibt 5.96:1 auf THEME_BG — AA-konform.
+THEME_ACCENT_TEXT   = "#818CF8"
 THEME_ACCENT_HOVER  = "#7B7DF5"
 THEME_ACCENT_SOFT   = "rgba(99, 102, 241, 0.18)"
-THEME_DANGER        = "#EF4444"
-THEME_SUCCESS       = "#22C55E"
-THEME_WARNING       = "#F59E0B"
+THEME_DANGER        = "#EF4444"   # 5.36:1 on BG — AA (als Text)
+THEME_SUCCESS       = "#22C55E"   # 7.85:1 on BG — AAA
+THEME_WARNING       = "#F59E0B"   # 8.6:1 on BG  — AAA
 
 
 def apply_app_theme(qapp):
@@ -2032,7 +2038,7 @@ class HotkeyRecorderDialog(QDialog):
         layout.addWidget(display_frame)
 
         self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet(f"color: {THEME_DANGER}; font-size: 11px;")
+        self._error_lbl.setStyleSheet(f"color: {THEME_DANGER}; font-size: 12px;")
         self._error_lbl.setVisible(False)
         layout.addWidget(self._error_lbl)
 
@@ -2194,7 +2200,7 @@ class TranscriptDetailDialog(QDialog):
 
         ts_str = _time.strftime("%d.%m.%Y  %H:%M:%S", _time.localtime(ts))
         head = QLabel(ts_str)
-        head.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        head.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         layout.addWidget(head)
 
         edit = QPlainTextEdit(self)
@@ -2248,7 +2254,7 @@ class HistoryEntryCard(QFrame):
 
         ts_str = _time.strftime("%d.%m.%Y  %H:%M", _time.localtime(ts or 0))
         ts_lbl = QLabel(ts_str)
-        ts_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        ts_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         body.addWidget(ts_lbl)
 
         text_lbl = QLabel(self._text)
@@ -2421,7 +2427,7 @@ class StatCard(QFrame):
         v.addWidget(self._label_lbl)
 
         self._sub_lbl = QLabel(sub or "")
-        self._sub_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        self._sub_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         self._sub_lbl.setVisible(bool(sub))
         v.addWidget(self._sub_lbl)
 
@@ -2797,14 +2803,14 @@ class StyleCard(QFrame):
         head_row.addStretch(1)
 
         self._check = QLabel("●")
-        self._check.setStyleSheet(f"color: {THEME_ACCENT}; font-size: 14px;")
+        self._check.setStyleSheet(f"color: {THEME_ACCENT_TEXT}; font-size: 14px;")
         self._check.setVisible(False)
         head_row.addWidget(self._check)
         v.addLayout(head_row)
 
         sample_in_lbl = QLabel(f"Diktat: {sample_input}")
         sample_in_lbl.setWordWrap(True)
-        sample_in_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        sample_in_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         v.addWidget(sample_in_lbl)
 
         sep = QFrame()
@@ -3025,19 +3031,29 @@ class StyleView(QWidget):
         """Page 0 vs Page 1 umschalten. Voraussetzung für die Style-Auswahl
         sind ZWEI Bedingungen: Ollama läuft UND der User hat die KI-
         Bereinigung aktiviert. Sonst hat das Ändern des Stils keinen
-        Effekt - dann lieber transparent sperren."""
-        ready = self.app.ollama_mgr.is_ready()
+        Effekt — dann lieber transparent sperren."""
+        state = self.app.ollama_mgr.state()
+        ready = (state == OLLAMA_READY)
         cleanup_on = bool(self.app.cleanup_enabled)
         unlocked = ready and cleanup_on
-        if not ready:
+        if state == OLLAMA_NOT_INSTALLED:
+            self._lock_text.setText(
+                "Ollama ist nicht installiert. Gehe zu Einstellungen → "
+                "KI-Textbereinigung, um es zu installieren."
+            )
+        elif state == OLLAMA_PAUSED:
+            self._lock_text.setText(
+                "Ollama ist für IQspeakr deaktiviert. Aktiviere die Option "
+                "in den Einstellungen, um den Schreibstil zu wählen."
+            )
+        elif not ready:
             self._lock_text.setText(
                 "Ollama ist nicht aktiv. Aktiviere die KI-Textbereinigung "
-                "in den Einstellungen, dann schaltet sich der Schreibstil "
-                "automatisch frei."
+                "in den Einstellungen."
             )
         else:
             self._lock_text.setText(
-                "KI-Textbereinigung ist deaktiviert. Aktiviere die Checkbox "
+                "KI-Textbereinigung ist ausgeschaltet. Aktiviere die Checkbox "
                 "in den Einstellungen, um den Schreibstil zu wählen."
             )
         self._stack.setCurrentIndex(1 if unlocked else 0)
@@ -3083,7 +3099,7 @@ class DictionaryEditDialog(QDialog):
             "korrekte Schreibung ersetzt werden sollen."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        hint.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         v.addWidget(hint)
 
         self._variants_edit = QPlainTextEdit()
@@ -3179,7 +3195,7 @@ class _DictEntryCard(QFrame):
         f" border: 1px solid {THEME_BORDER};"
         f" border-radius: 10px;"
         f" padding: 3px 9px;"
-        f" font-size: 11px;"
+        f" font-size: 12px;"
         f"}}"
     )
 
@@ -3438,7 +3454,7 @@ class SettingsView(QWidget):
         body = QWidget()
         scroll.setWidget(body)
         v = QVBoxLayout(body)
-        v.setContentsMargins(36, 32, 36, 28)
+        v.setContentsMargins(36, 32, 36, 40)
         v.setSpacing(24)
 
         title = QLabel("Einstellungen")
@@ -3540,7 +3556,7 @@ class SettingsView(QWidget):
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
 
         self._model_status_lbl = QLabel("")
-        self._model_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        self._model_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         self._model_pull_btn = QPushButton("Modell herunterladen")
         self._model_pull_btn.setMinimumHeight(28)
         self._model_pull_btn.setProperty("role", "primary")
@@ -3566,7 +3582,7 @@ class SettingsView(QWidget):
         ob.addWidget(self._progress)
 
         self._progress_text = QLabel("")
-        self._progress_text.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+        self._progress_text.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
         self._progress_text.setVisible(False)
         ob.addWidget(self._progress_text)
 
@@ -3660,6 +3676,44 @@ class SettingsView(QWidget):
         ob.addSpacing(6)
         ob.addWidget(info_box)
 
+        # --- Danger Zone: Systemweite Deinstallation ---
+        self._danger_section = QFrame()
+        self._danger_section.setObjectName("OllamaDangerZone")
+        self._danger_section.setStyleSheet(
+            "#OllamaDangerZone {"
+            f" border-top: 1px solid rgba(239, 68, 68, 0.22);"
+            "}"
+        )
+        dv = QVBoxLayout(self._danger_section)
+        dv.setContentsMargins(0, 14, 0, 8)
+        dv.setSpacing(6)
+
+        danger_title = QLabel("Systemaktion")
+        danger_title.setStyleSheet(
+            f"color: {THEME_DANGER}; font-size: 12px; font-weight: 700; letter-spacing: 0.8px;"
+        )
+        dv.addWidget(danger_title)
+
+        danger_hint = QLabel(
+            "Entfernt Ollama komplett vom PC — nicht nur aus IQspeakr. "
+            "Andere Apps, die Ollama verwenden (z. B. Reel-Agent), funktionieren danach nicht mehr."
+        )
+        danger_hint.setWordWrap(True)
+        danger_hint.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
+        dv.addWidget(danger_hint)
+
+        danger_row = QHBoxLayout()
+        self._uninstall_btn = QPushButton("Ollama vom PC entfernen…")
+        self._uninstall_btn.setProperty("role", "danger")
+        self._uninstall_btn.setFixedHeight(30)
+        self._uninstall_btn.clicked.connect(self._on_uninstall_clicked)
+        danger_row.addWidget(self._uninstall_btn)
+        danger_row.addStretch(1)
+        dv.addLayout(danger_row)
+
+        ob.addSpacing(4)
+        ob.addWidget(self._danger_section)
+
         v.addWidget(self._ollama_box)
 
         v.addStretch(1)
@@ -3679,6 +3733,7 @@ class SettingsView(QWidget):
         self.app.whisper_changed.connect(self._on_whisper_remote)
         self.app.language_changed.connect(self._on_language_remote)
         self.app.ollama_model_changed.connect(self._on_ollama_model_remote)
+        self.app.warmup_status_sig.connect(self._on_warmup_status)
 
         self._refresh_ollama_ui()
 
@@ -3784,9 +3839,20 @@ class SettingsView(QWidget):
             return
         self.app.ollama_mgr.pull_model(new_model)
 
+    def _on_warmup_status(self, status: str):
+        if status:
+            self._model_status_lbl.setText(status)
+            self._model_status_lbl.setStyleSheet(f"color: {THEME_WARNING}; font-size: 12px;")
+            self._model_status_lbl.setVisible(True)
+        else:
+            self._refresh_ollama_ui()
+
     def _on_active_toggled(self, on):
         self.app.config["ollama_active"] = bool(on)
         save_config(self.app.config)
+        if on:
+            self._ollama_status.setText("Kleinen Moment — Backend wird gestartet…")
+            self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
         self.app.ollama_mgr.set_user_active(bool(on))
 
     # --- Ollama-State-Reaktion ---
@@ -3835,22 +3901,25 @@ class SettingsView(QWidget):
         state = self.app.ollama_mgr.state()
         model = self._model_combo.currentData() or self.app.config.get("ollama_model", "llama3.2")
         if state in (OLLAMA_DOWNLOADING, OLLAMA_INSTALLING, OLLAMA_PULLING):
-            # Button ist gerade "Abbrechen" - Cancel an den laufenden Worker.
             self.app.ollama_mgr.cancel()
             return
-        if state == OLLAMA_NOT_INSTALLED or state == OLLAMA_ERROR:
+        if state in (OLLAMA_NOT_INSTALLED, OLLAMA_ERROR):
             self.app.ollama_mgr.install(model)
-        elif state in (OLLAMA_READY, OLLAMA_PAUSED):
-            confirm = QMessageBox.question(
-                self,
-                "Ollama deinstallieren",
-                "Ollama wirklich deinstallieren? Heruntergeladene Modelle "
-                "bleiben in %USERPROFILE%\\.ollama\\ erhalten.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if confirm == QMessageBox.Yes:
-                self.app.ollama_mgr.uninstall()
+
+    def _on_uninstall_clicked(self):
+        confirm = QMessageBox.question(
+            self,
+            "Ollama systemweit deinstallieren?",
+            "⚠️  Ollama wird vollständig vom PC entfernt — nicht nur aus IQspeakr.\n\n"
+            "Alle anderen Apps auf diesem PC, die Ollama verwenden "
+            "(z. B. Reel-Agent), funktionieren danach nicht mehr.\n\n"
+            "Heruntergeladene Modelle bleiben in %USERPROFILE%\\.ollama\\ erhalten.\n\n"
+            "Wirklich fortfahren?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm == QMessageBox.Yes:
+            self.app.ollama_mgr.uninstall()
 
     def _set_action_role(self, role):
         # Property muss neu gepolisht werden, sonst greifen die globalen
@@ -3861,16 +3930,36 @@ class SettingsView(QWidget):
 
     def _refresh_ollama_ui(self):
         state = self.app.ollama_mgr.state()
-        # Sichtbarkeit Default zurücksetzen
+
+        # Defaults zurücksetzen
         self._progress.setVisible(False)
         self._progress_text.setVisible(False)
-        # Modell-Status-Label zurücksetzen, wird in den Branches gesetzt
         self._model_pull_btn.setVisible(False)
         self._model_status_lbl.setText("")
+        self._action_btn.setVisible(False)
+        self._danger_section.setVisible(False)
+
+        installed = state in (OLLAMA_READY, OLLAMA_PAUSED)
+        busy = state in (OLLAMA_DOWNLOADING, OLLAMA_INSTALLING, OLLAMA_PULLING)
+
+        # Aktiv-Checkbox: nur sichtbar wenn Ollama installiert ist
+        self._active_cb.setVisible(installed)
+        if installed:
+            self._active_cb.blockSignals(True)
+            self._active_cb.setChecked(state == OLLAMA_READY)
+            self._active_cb.blockSignals(False)
+
+        # Cleanup-Checkbox: nur sinnvoll wenn Ollama aktiv ist
+        self._cleanup_cb.setEnabled(state == OLLAMA_READY)
+        self._cleanup_cb.setVisible(True)
+
+        # Modell-Combo: nur wenn Ollama aktiv ist (nicht bei PAUSED oder busy)
+        self._model_combo.setEnabled(state == OLLAMA_READY)
+
         if state == OLLAMA_NOT_INSTALLED:
             self._ollama_status.setText(
-                "Ollama ist nicht installiert. Installiere es, um KI-"
-                "Textbereinigung zu aktivieren (Download ca. 1.8 GB)."
+                "Ollama ist nicht installiert. Installiere es, um die "
+                "KI-Textbereinigung zu nutzen (Download ca. 1,8 GB)."
             )
             self._ollama_status.setStyleSheet(f"color: {THEME_TEXT_SECONDARY};")
             self._action_btn.setText("Ollama herunterladen und installieren")
@@ -3878,88 +3967,77 @@ class SettingsView(QWidget):
             self._action_btn.setEnabled(True)
             self._action_btn.setVisible(True)
             self._model_combo.setEnabled(True)
-            self._cleanup_cb.setEnabled(False)
-            self._active_cb.setEnabled(False)
+
         elif state == OLLAMA_DOWNLOADING:
-            self._ollama_status.setText("Lade OllamaSetup.exe herunter...")
+            self._ollama_status.setText("Lade OllamaSetup.exe herunter…")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
             self._action_btn.setText("Abbrechen")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
             self._action_btn.setVisible(True)
-            self._model_combo.setEnabled(False)
-            self._cleanup_cb.setEnabled(False)
-            self._active_cb.setEnabled(False)
             self._progress.setVisible(True)
             self._progress_text.setVisible(True)
+
         elif state == OLLAMA_INSTALLING:
-            self._ollama_status.setText("Installer läuft...")
+            self._ollama_status.setText("Installer läuft…")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
             self._action_btn.setText("Abbrechen")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
             self._action_btn.setVisible(True)
-            self._model_combo.setEnabled(False)
-            self._cleanup_cb.setEnabled(False)
-            self._active_cb.setEnabled(False)
             self._progress.setRange(0, 0)
             self._progress.setVisible(True)
             self._progress_text.setVisible(True)
+
         elif state == OLLAMA_PULLING:
-            self._ollama_status.setText("Lade Modell herunter...")
+            self._ollama_status.setText("Lade Modell herunter…")
             self._ollama_status.setStyleSheet(f"color: {THEME_WARNING};")
             self._action_btn.setText("Abbrechen")
             self._set_action_role("danger")
             self._action_btn.setEnabled(True)
             self._action_btn.setVisible(True)
-            self._model_combo.setEnabled(False)
-            self._cleanup_cb.setEnabled(False)
-            self._active_cb.setEnabled(False)
             self._progress.setVisible(True)
             self._progress_text.setVisible(True)
+
         elif state == OLLAMA_READY:
-            self._ollama_status.setText("Ollama aktiv. KI-Textbereinigung verfügbar.")
+            self._ollama_status.setText("Ollama aktiv — KI-Textbereinigung verfügbar.")
             self._ollama_status.setStyleSheet(f"color: {THEME_SUCCESS}; font-weight: 500;")
-            self._action_btn.setText("Ollama deinstallieren")
-            self._set_action_role("danger")
-            self._action_btn.setEnabled(True)
-            self._action_btn.setVisible(True)
-            self._model_combo.setEnabled(True)
-            self._cleanup_cb.setEnabled(True)
-            self._active_cb.setEnabled(True)
-            # Modell-Status-Label + Pull-Button.
+            # Modell-Status + optionaler Pull-Button
             sel_model = self._model_combo.currentData() or self.app.config.get("ollama_model", "")
             if sel_model:
                 if self.app.ollama_mgr.has_model(sel_model):
                     self._model_status_lbl.setText("✓ Modell ist bereit")
-                    self._model_status_lbl.setStyleSheet(f"color: {THEME_SUCCESS}; font-size: 11px;")
-                    self._model_pull_btn.setVisible(False)
+                    self._model_status_lbl.setStyleSheet(f"color: {THEME_SUCCESS}; font-size: 12px;")
                 else:
-                    self._model_status_lbl.setText("Modell ist noch nicht heruntergeladen.")
-                    self._model_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 11px;")
+                    self._model_status_lbl.setText("Modell noch nicht heruntergeladen.")
+                    self._model_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
                     self._model_pull_btn.setVisible(True)
+            self._danger_section.setVisible(True)
+
         elif state == OLLAMA_PAUSED:
             self._ollama_status.setText(
-                "Ollama ist pausiert. Backend läuft nicht, Cleanup übersprungen."
+                "Ollama ist für IQspeakr deaktiviert. Cleanup wird übersprungen."
             )
             self._ollama_status.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-weight: 500;")
-            self._action_btn.setText("Ollama deinstallieren")
-            self._set_action_role("danger")
-            self._action_btn.setEnabled(True)
-            self._action_btn.setVisible(True)
-            self._model_combo.setEnabled(True)
-            self._cleanup_cb.setEnabled(False)
-            self._active_cb.setEnabled(True)
+            self._danger_section.setVisible(True)
+
         else:  # OLLAMA_ERROR
-            self._ollama_status.setText("Fehler. Versuche es erneut.")
+            self._ollama_status.setText("Verbindungsfehler. Versuche es erneut.")
             self._ollama_status.setStyleSheet(f"color: {THEME_DANGER};")
             self._action_btn.setText("Erneut versuchen")
             self._set_action_role("primary")
             self._action_btn.setEnabled(True)
             self._action_btn.setVisible(True)
             self._model_combo.setEnabled(True)
-            self._cleanup_cb.setEnabled(False)
-            self._active_cb.setEnabled(True)
+
+        # StyleView-Lock synchron halten
+        try:
+            if self.app.main_window is not None:
+                sv = self.app.main_window.style_view
+                if sv is not None:
+                    sv.refresh_lock()
+        except Exception:
+            pass
 
 
 # =====================================================================
@@ -4223,6 +4301,8 @@ class IQspeakrApp(QObject):
     whisper_changed = Signal(str)
     language_changed = Signal(object)  # str oder None
     ollama_model_changed = Signal(str)
+    # Warmup-Feedback: "" = fertig, sonst Statustext für SettingsView.
+    warmup_status_sig = Signal(str)
 
     def __init__(self, qapp, splash=None):
         super().__init__()
@@ -4390,12 +4470,12 @@ class IQspeakrApp(QObject):
         """Mini-Generation gegen das aktuell konfigurierte Modell, damit
         Ollama es ins RAM lädt + keep_alive setzt. Spart 5-10s beim
         ersten echten Cleanup nach App-Start."""
+        model = self.config.get("ollama_model", "llama3.2:1b")
+        if not self.ollama_mgr.has_model(model):
+            log.info(f"Ollama-Warmup: Modell '{model}' nicht installiert, skip")
+            return
+        self.warmup_status_sig.emit(f"Einen Moment — Modell wird geladen…")
         try:
-            model = self.config.get("ollama_model", "llama3.2:1b")
-            # Prüfe ob das Modell überhaupt gepullt ist - sonst sinnlos.
-            if not self.ollama_mgr.has_model(model):
-                log.info(f"Ollama-Warmup: Modell '{model}' nicht installiert, skip")
-                return
             payload = json.dumps({
                 "model": model,
                 "prompt": "Hi",
@@ -4413,6 +4493,8 @@ class IQspeakrApp(QObject):
             log.info(f"Ollama-Warmup ({model}): {(_time.time() - t0) * 1000:.0f}ms")
         except Exception as e:
             log.warning(f"Ollama-Warmup fehlgeschlagen: {e}")
+        finally:
+            self.warmup_status_sig.emit("")  # fertig → UI zurücksetzen
 
     # --- Hilfsmethoden, von der SettingsView aufgerufen ---
 
@@ -4723,8 +4805,9 @@ class IQspeakrApp(QObject):
     def _load_model(self):
         try:
             size = self.config["whisper_model"]
-            log.info(f"Lade Whisper-Modell '{size}' (faster-whisper, int8 CPU)...")
-            self.model = WhisperModel(size, device="cpu", compute_type="int8")
+            cpu_threads = min(8, os.cpu_count() or 4)
+            log.info(f"Lade Whisper-Modell '{size}' (faster-whisper, int8_float32 CPU, threads={cpu_threads})...")
+            self.model = WhisperModel(size, device="cpu", compute_type="int8_float32", cpu_threads=cpu_threads)
             log.info("Whisper-Modell erfolgreich geladen")
         except Exception:
             log.exception("FATAL: WhisperModel-Laden ist gescheitert")
@@ -4732,7 +4815,19 @@ class IQspeakrApp(QObject):
             self._notify("IQspeakr - Fehler", "Modell-Laden gescheitert. Siehe IQspeakr.log.", level="error")
             return
 
-        # Persistenten Audio-Stream öffnen - bleibt bis zum Quit aktiv.
+        # Persistenten Audio-Stream: nur beim ersten Start öffnen.
+        # Bei Modell-Wechsel (_apply_whisper ruft _load_model erneut) läuft
+        # der Stream bereits — ein zweites InputStream auf dasselbe Gerät
+        # erzeugt zwei konkurrierende Callbacks und führt zu Crashes.
+        if self._persistent_stream is not None:
+            log.info("Audio-Stream läuft bereits — überspringe Re-Init bei Modell-Wechsel")
+            self._set_status("Bereit")
+            self._notify(
+                "IQspeakr",
+                f"Whisper '{self.config['whisper_model']}' geladen.",
+            )
+            return
+
         try:
             self._persistent_stream = sd.InputStream(
                 samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -5019,6 +5114,15 @@ class IQspeakrApp(QObject):
         ).start()
 
     def _transcribe_frames(self, frames):
+        # Lokale Referenz verhindert Race wenn self.model während Transkription
+        # auf None gesetzt wird (z.B. schneller Modell-Wechsel).
+        model = self.model
+        if model is None:
+            log.warning("_transcribe_frames: Modell nicht geladen — überspringe")
+            self._set_icon_state("ready")
+            self._refresh_menu()
+            return
+
         audio_data = np.concatenate(frames, axis=0).flatten().astype(np.float32)
         audio_dur_sec = len(audio_data) / float(SAMPLE_RATE)
         log.info(
@@ -5028,10 +5132,12 @@ class IQspeakrApp(QObject):
 
         try:
             lang = self.config.get("language")
+            if lang == "auto":
+                lang = None  # faster-whisper: None = automatische Erkennung
             log.info(f"Starte Whisper-Transkription (Sprache: {lang})...")
             try:
                 t_whisper_start = _time.time()
-                segments, info = self.model.transcribe(
+                segments, info = model.transcribe(
                     audio_data,
                     language=lang,
                     beam_size=1,           # statt 5: ~halb so lange, minimal weniger Qualität
