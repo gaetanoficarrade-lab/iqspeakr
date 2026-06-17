@@ -1,0 +1,9 @@
+PySide6
+openai-whisper
+numpy
+sounddevice
+pynput
+pyperclip
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+sentry-sdk
