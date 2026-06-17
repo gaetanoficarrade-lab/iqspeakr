@@ -83,6 +83,7 @@ $args = @(
     "--collect-all", "onnxruntime",
     "--collect-all", "tokenizers",
     "--collect-submodules", "pynput",
+    "--collect-submodules", "sentry_sdk",
     "--exclude-module", "pystray",
     "--exclude-module", "PIL.ImageTk",
     "--exclude-module", "tkinter",
@@ -95,7 +96,8 @@ $args = @(
     "--exclude-module", "PySide6.QtCharts",
     "--exclude-module", "PySide6.QtDataVisualization",
     "--exclude-module", "PySide6.QtQuick3D",
-    "--add-data", "config.json;."
+    "--add-data", "config.json;.",
+    "--add-data", "assets;assets"
 )
 if ($IconArg) { $args += "--icon=icon.ico" }
 $args += "app.py"

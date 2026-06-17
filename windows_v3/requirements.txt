@@ -4,3 +4,4 @@ numpy
 PySide6
 pynput
 pyperclip
+sentry-sdk

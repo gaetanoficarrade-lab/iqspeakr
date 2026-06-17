@@ -144,7 +144,7 @@ Das Wörterbuch ist persistiert in `%APPDATA%\IQspeakr\dictionary.json`.
 - **Einzige Internetverbindung** ist beim ersten Start zum Whisper-Modell-Download (kommt von HuggingFace) und beim ersten Mal beim Ollama-Modell-Pull. Danach offline einsetzbar.
 - **Was die App speichert** (alles lokal): Konfiguration, History der letzten 10 Transkripte (für die Home-Ansicht), Aktivitäts-Statistiken (Streak, WPM, Heatmap) in einer SQLite-DB.
 
-Keine Telemetrie. Keine Crash-Reports an externe Server. Logs landen ausschließlich in `~/IQspeakr.log` lokal.
+- **Fehlerberichte (opt-out):** Bei echten Fehlern/Crashes sendet die App einen Bericht an ein Sentry-Projekt in der **EU-Region** — **nur** Fehlertyp + Umgebung (Windows-Version, CPU, App-Version). **Keine Transkripte, kein Clipboard, kein getippter Text, keine Audiodaten.** Abschaltbar in *Settings → „Anonyme Fehlerberichte senden"* oder per `config.json → "error_reporting": false`. Ohne konfigurierte DSN passiert ohnehin nichts. Logs landen lokal in `~/IQspeakr.log`.
 
 ---
 

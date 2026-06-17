@@ -4,5 +4,6 @@
   "ollama_model": "llama3.2",
   "cleanup_enabled": true,
   "language": "de",
-  "overlay_enabled": false
+  "overlay_enabled": false,
+  "error_reporting": true
 }

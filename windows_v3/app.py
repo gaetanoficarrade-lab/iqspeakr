@@ -109,7 +109,7 @@ class _StartupSplash(_QWidget):
         layout.setSpacing(10)
 
         title = _QLabel("🎤  IQspeakr startet…")
-        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #F1F5F9;")
+        title.setStyleSheet("font-size: 16px; font-weight: 600; color: #3A3F42;")
         title.setAlignment(_Qt.AlignCenter)
 
         msg = _QLabel(
@@ -117,17 +117,17 @@ class _StartupSplash(_QWidget):
             "Einen Moment bitte — das dauert nur kurz."
         )
         msg.setAlignment(_Qt.AlignCenter)
-        msg.setStyleSheet("color: #CBD5E1;")
+        msg.setStyleSheet("color: #565D61;")
 
         bar = _QProgressBar()
         bar.setRange(0, 0)
         bar.setTextVisible(False)
         bar.setFixedHeight(6)
-        # Akzent-Indigo passend zum Theme.
+        # Akzent-Teal passend zum hellen Theme.
         bar.setStyleSheet(
-            "QProgressBar { background: #1F232C; border: 1px solid #2A2D35; "
+            "QProgressBar { background: #E6E2D9; border: 1px solid #D9D4C9; "
             "border-radius: 3px; } "
-            "QProgressBar::chunk { background: #6366F1; border-radius: 3px; }"
+            "QProgressBar::chunk { background: #1B8A99; border-radius: 3px; }"
         )
 
         layout.addWidget(title)
@@ -136,8 +136,8 @@ class _StartupSplash(_QWidget):
 
         self.setStyleSheet(
             "_StartupSplash { "
-            "background: #16181D; "
-            "border: 1px solid #2A2D35; "
+            "background: #EEEBE4; "
+            "border: 1px solid #D9D4C9; "
             "border-radius: 10px; "
             "}"
         )
@@ -152,7 +152,31 @@ class _StartupSplash(_QWidget):
             pass
 
 
+def _load_bundled_fonts():
+    """Lädt die mitgelieferten Schriften (Inter/Fraunces) in die Qt-Font-DB,
+    damit apply_app_theme sie als Familien referenzieren kann. Rein additiv:
+    schlägt das Laden fehl, greift die Segoe-Fallback-Kette."""
+    try:
+        from PySide6.QtGui import QFontDatabase
+    except Exception:
+        return
+    bases = []
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bases.append(os.path.join(sys._MEIPASS, "assets", "fonts"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    bases.append(os.path.join(here, "assets", "fonts"))
+    for base in bases:
+        for fn in ("Inter.ttf", "Fraunces.ttf"):
+            p = os.path.join(base, fn)
+            if os.path.exists(p):
+                try:
+                    QFontDatabase.addApplicationFont(p)
+                except Exception:
+                    pass
+
+
 _qapp = _QApplication(sys.argv)
+_load_bundled_fonts()
 _qapp.setQuitOnLastWindowClosed(False)
 _splash = _StartupSplash()
 _splash.show()
@@ -181,8 +205,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import (
     QIcon, QPixmap, QAction, QActionGroup, QPainter, QColor,
-    QGuiApplication, QFont, QCursor,
+    QGuiApplication, QFont, QCursor, QDesktopServices,
 )
+from PySide6.QtCore import QUrl
 from PySide6.QtSvg import QSvgRenderer
 
 # --- Pfade ---
@@ -228,40 +253,174 @@ SAMPLE_RATE = 16000
 APP_ICON_PATH = os.path.join(APP_DIR, "icon.ico")
 
 # =====================================================================
+#  Version + Update-Repo. MUSS vor dem Sentry-Block und vor allen
+#  Helfern (check_for_update, _init_sentry) definiert sein, weil diese
+#  __version__ / UPDATE_REPO / RELEASE_ASSET_SUFFIX referenzieren.
+# =====================================================================
+__version__ = "2026.6.0"
+UPDATE_REPO = "gaetanoficarrade-lab/iqspeakr"
+RELEASE_ASSET_SUFFIX = ".exe"
+
+# =====================================================================
+#  Sentry (EU, opt-out). Rein additiv: ohne DSN bzw. bei deaktiviertem
+#  error_reporting passiert nichts. Liest die Config-Datei direkt, weil
+#  load_config() / DEFAULT_CONFIG hier noch nicht definiert sind.
+# =====================================================================
+_SENTRY_DSN_BAKED = ""
+SENTRY_DSN = os.environ.get("IQSPEAKR_SENTRY_DSN", _SENTRY_DSN_BAKED)
+
+
+def _telemetry_enabled():
+    if os.environ.get("IQSPEAKR_NO_TELEMETRY"):
+        return False
+    try:
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                return bool(json.load(fh).get("error_reporting", True))
+    except Exception:
+        pass
+    return True
+
+
+def _init_sentry():
+    if not SENTRY_DSN or not _telemetry_enabled():
+        return
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.logging import LoggingIntegration
+    except Exception as exc:
+        log.info(f"Sentry n/a: {exc}")
+        return
+
+    def _before_send(event, hint):
+        # Niemals Transkripte / Clipboard / getippten Text an Sentry geben.
+        event.pop("request", None)
+        extra = event.get("extra")
+        if isinstance(extra, dict):
+            for k in ("transcript", "text", "clipboard", "paste"):
+                extra.pop(k, None)
+        return event
+
+    try:
+        sentry_sdk.init(
+            dsn=SENTRY_DSN, release=f"iqspeakr@{__version__}",
+            environment="production", traces_sample_rate=0.0, send_default_pii=False,
+            integrations=[LoggingIntegration(level=None, event_level=logging.ERROR)],
+            before_send=_before_send,
+        )
+        sentry_sdk.set_tag("platform_variant", "windows_v3")
+        log.info("Sentry initialisiert (EU, opt-out)")
+    except Exception as exc:
+        log.warning(f"Sentry-Init fehlgeschlagen: {exc}")
+
+
+_init_sentry()
+
+
+# =====================================================================
+#  Auto-Updater (nur Hinweis, KEIN Auto-Install). Reine Netz-Abfrage
+#  gegen die GitHub-Releases-API; Fehler werden geschluckt.
+# =====================================================================
+def _parse_ver(s):
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", s or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def check_for_update(timeout=6):
+    try:
+        import json as _json
+        url = f"https://api.github.com/repos/{UPDATE_REPO}/releases"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "IQspeakr-UpdateCheck",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            releases = _json.load(resp)
+        cur = _parse_ver(__version__)
+        latest = None
+        for rel in releases:
+            if rel.get("draft") or rel.get("prerelease"):
+                continue
+            assets = rel.get("assets") or []
+            if not any(a.get("name", "").endswith(RELEASE_ASSET_SUFFIX) for a in assets):
+                continue
+            latest = rel
+            break
+        if latest is None:
+            return None
+        v = _parse_ver(latest.get("tag_name", ""))
+        if cur and v and v > cur:
+            return (latest.get("tag_name", ""), latest.get("html_url"))
+        return None
+    except Exception:
+        return None
+
+
+# =====================================================================
+#  Daten-Backup: vor IQspeakrApp-Init in main() einmal aufgerufen.
+# =====================================================================
+def _backup_user_data():
+    try:
+        import shutil
+        import glob
+        from datetime import datetime as _dt
+        backup_dir = os.path.join(os.path.dirname(HISTORY_PATH), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        for src in (HISTORY_PATH, STATS_DB_PATH):
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(backup_dir, f"{os.path.basename(src)}.{stamp}.bak"))
+        for name in ("history.json", "stats.db"):
+            baks = sorted(glob.glob(os.path.join(backup_dir, f"{name}.*.bak")))
+            for old in baks[:-5]:
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning(f"User-Daten-Backup uebersprungen: {e}")
+
+
+# =====================================================================
 #  Theme-Tokens. Eine Stelle für alle Farben - sonst driftet das auseinander.
 # =====================================================================
 
-THEME_BG            = "#16181D"
-THEME_BG_SIDEBAR    = "#0F1115"
-THEME_BG_CARD       = "#1B1E25"
-THEME_BG_INPUT      = "#1F232C"
-THEME_BG_HOVER      = "rgba(255, 255, 255, 0.05)"
-THEME_BORDER        = "#2A2D35"
-THEME_BORDER_HOVER  = "#3A3F4A"
-THEME_BORDER_SOFT   = "rgba(255, 255, 255, 0.06)"
-THEME_TEXT          = "#F1F5F9"   # 12.6:1 on BG — AAA
-THEME_TEXT_SECONDARY = "#CBD5E1"  # 9.9:1 on BG — AAA
-THEME_TEXT_MUTED    = "#8C92A0"   # 5.8:1 on BG — AA
-# THEME_ACCENT als Hintergrundfarbe (Primary-Buttons, Checkboxen, Progress):
-# Weiß darauf = 4.54:1 → AA-konform für normalen Text.
-THEME_ACCENT        = "#6366F1"
-# THEME_ACCENT_TEXT für Akzentfarbe ALS Text auf dunklem Hintergrund:
-# #818CF8 ergibt 5.96:1 auf THEME_BG — AA-konform.
-THEME_ACCENT_TEXT   = "#818CF8"
-THEME_ACCENT_HOVER  = "#7B7DF5"
-THEME_ACCENT_SOFT   = "rgba(99, 102, 241, 0.18)"
-THEME_DANGER        = "#EF4444"   # 5.36:1 on BG — AA (als Text)
-THEME_SUCCESS       = "#22C55E"   # 7.85:1 on BG — AAA
-THEME_WARNING       = "#F59E0B"   # 8.6:1 on BG  — AAA
+THEME_BG             = "#EEEBE4"
+THEME_BG_SIDEBAR     = "#E6E2D9"
+THEME_BG_CARD        = "#E6E2D9"
+THEME_BG_INPUT       = "#FBFAF6"
+THEME_BG_HOVER       = "rgba(0, 0, 0, 0.04)"
+THEME_BORDER         = "#D9D4C9"
+THEME_BORDER_HOVER   = "#C7C0B1"
+THEME_BORDER_SOFT    = "rgba(0, 0, 0, 0.06)"
+THEME_TEXT           = "#3A3F42"
+THEME_TEXT_SECONDARY = "#565D61"
+THEME_TEXT_MUTED     = "#8A8E8B"
+# THEME_ACCENT als Hintergrundfarbe (Primary-Buttons, Checkboxen, Progress).
+THEME_ACCENT         = "#1B8A99"
+# THEME_ACCENT_TEXT für Akzentfarbe ALS Text auf hellem Grund (lesbar).
+THEME_ACCENT_TEXT    = "#146E7B"
+THEME_ACCENT_HOVER   = "#146E7B"
+THEME_ACCENT_SOFT    = "rgba(27, 138, 153, 0.14)"
+THEME_SECONDARY      = "#D4A574"   # NEU, sparsam
+THEME_DANGER         = "#C0492F"
+THEME_SUCCESS        = "#1E9E54"
+THEME_WARNING        = "#C98A1E"
 
 
 def apply_app_theme(qapp):
     """Setzt System-Font + globale QSS auf die QApplication. Wird einmal
     in main() aufgerufen, danach erbt jedes Widget davon. Lokale
     setStyleSheet()-Aufrufe in einzelnen Klassen ergänzen / spezialisieren."""
-    # Segoe UI Variable ist Windows-11-Standard, mit Fallback auf
-    # Segoe UI (Win10) und Inter falls jemand das eingebunden hat.
-    font = QFont("Segoe UI Variable Display")
+    # Inter ist die bevorzugte (mitgelieferte) Basis-Schrift, mit
+    # Segoe-UI-Fallback-Kette für den Fall, dass _load_bundled_fonts
+    # die TTF nicht registrieren konnte.
+    font = QFont("Inter")
+    if not font.exactMatch():
+        font = QFont("Segoe UI Variable Display")
     if not font.exactMatch():
         font = QFont("Segoe UI Variable")
     if not font.exactMatch():
@@ -299,8 +458,12 @@ def apply_app_theme(qapp):
     }}
     QLabel[role="h1"] {{
         color: {THEME_TEXT};
+        font-family: 'Fraunces';
         font-size: 22px;
         font-weight: 700;
+    }}
+    QLabel[role="title"] {{
+        font-family: 'Fraunces';
     }}
     QLabel[role="sub"] {{
         color: {THEME_TEXT_SECONDARY};
@@ -348,7 +511,7 @@ def apply_app_theme(qapp):
     }}
     QLineEdit:disabled, QComboBox:disabled, QPlainTextEdit:disabled {{
         color: {THEME_TEXT_MUTED};
-        background: #181B22;
+        background: #E4E0D6;
     }}
 
     /* ---- ComboBox dropdown ---- */
@@ -382,40 +545,45 @@ def apply_app_theme(qapp):
     }}
 
     /* ---- Buttons ---- */
+    /* Standard = outlined Teal auf hellem Grund. */
     QPushButton {{
-        background: {THEME_BG_INPUT};
-        color: {THEME_TEXT};
-        border: 1px solid {THEME_BORDER};
+        background: transparent;
+        color: {THEME_ACCENT};
+        border: 1px solid {THEME_ACCENT};
         border-radius: 8px;
         padding: 8px 16px;
         min-height: 18px;
         font-weight: 500;
     }}
     QPushButton:hover {{
-        background: {THEME_BG_HOVER};
-        border-color: {THEME_BORDER_HOVER};
+        background: {THEME_ACCENT_SOFT};
+        border-color: {THEME_ACCENT};
     }}
     QPushButton:pressed {{
-        background: #15171C;
+        background: rgba(27, 138, 153, 0.22);
     }}
     QPushButton:disabled {{
         color: {THEME_TEXT_MUTED};
-        background: #181B22;
+        background: #E4E0D6;
         border-color: {THEME_BORDER};
     }}
+    /* Primary = gefüllt Teal mit weißem Text. */
     QPushButton[role="primary"] {{
         background: {THEME_ACCENT};
-        color: white;
-        border: 1px solid {THEME_ACCENT};
+        color: #FFFFFF;
+        border: none;
     }}
     QPushButton[role="primary"]:hover {{
         background: {THEME_ACCENT_HOVER};
-        border-color: {THEME_ACCENT_HOVER};
+        border: none;
+    }}
+    QPushButton[role="primary"]:pressed {{
+        background: #0F5A64;
     }}
     QPushButton[role="primary"]:disabled {{
-        background: #2A2A50;
-        color: #8E8FBF;
-        border-color: #2A2A50;
+        background: #BFD8DC;
+        color: #7C9DA1;
+        border: none;
     }}
     QPushButton[role="danger"] {{
         background: transparent;
@@ -423,7 +591,7 @@ def apply_app_theme(qapp):
         border: 1px solid {THEME_DANGER};
     }}
     QPushButton[role="danger"]:hover {{
-        background: rgba(239, 68, 68, 0.10);
+        background: rgba(192, 73, 47, 0.10);
     }}
 
     /* ---- CheckBox ---- */
@@ -469,12 +637,12 @@ def apply_app_theme(qapp):
         margin: 0;
     }}
     QScrollBar::handle:vertical {{
-        background: #2F3340;
+        background: #D2CCC0;
         border-radius: 5px;
         min-height: 24px;
     }}
     QScrollBar::handle:vertical:hover {{
-        background: #3A3F4D;
+        background: #C2BCAF;
     }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
         background: transparent;
@@ -485,7 +653,7 @@ def apply_app_theme(qapp):
         height: 10px;
     }}
     QScrollBar::handle:horizontal {{
-        background: #2F3340;
+        background: #D2CCC0;
         border-radius: 5px;
         min-width: 24px;
     }}
@@ -925,6 +1093,8 @@ DEFAULT_CONFIG = {
     # ("Modell-Lade gescheitert", Whisper-Crash). Info wie "Kein Text erkannt"
     # oder "Modell geladen" wird unterdrückt.
     "notify_enabled": True,
+    # Anonyme Fehlerberichte (Sentry, EU, opt-out). Wirkt beim nächsten Start.
+    "error_reporting": True,
     # Style-Auswahl für die Cleanup-Prompt: formal | locker | sehr_locker | custom
     "style": "locker",
     # Wird nur ausgewertet wenn style == "custom".
@@ -2520,11 +2690,11 @@ class HeatmapWidget(QWidget):
 
     # 5 Stufen, von "leer" bis "voll" - voll = Akzent.
     LEVEL_COLORS = [
-        QColor("#22252D"),                # 0 - leicht heller als BG_CARD damit man's sieht
-        QColor(99, 102, 241,  60),        # 1 (alpha)
-        QColor(99, 102, 241, 110),        # 2-3
-        QColor(99, 102, 241, 175),        # 4-7
-        QColor(99, 102, 241, 255),        # 8+
+        QColor("#E6E2D9"),                # 0 - leere Zelle
+        QColor(27, 138, 153,  77),        # 1 (≈0.30 Teal)
+        QColor(27, 138, 153, 140),        # 2-3 (≈0.55)
+        QColor(27, 138, 153, 199),        # 4-7 (≈0.78)
+        QColor(27, 138, 153, 255),        # 8+  (1.0)
     ]
 
     def __init__(self, parent=None):
@@ -3250,7 +3420,7 @@ class _DictEntryCard(QFrame):
         del_btn.setToolTip("Löschen")
         del_btn.setStyleSheet(
             "QPushButton { background: transparent; border: 1px solid transparent; border-radius: 6px; }"
-            f"QPushButton:hover {{ background: rgba(239, 68, 68, 0.10); border-color: {THEME_DANGER}; }}"
+            f"QPushButton:hover {{ background: rgba(192, 73, 47, 0.10); border-color: {THEME_DANGER}; }}"
         )
         del_btn.clicked.connect(lambda: self.delete_requested.emit(self._idx))
         outer.addWidget(del_btn, 0, Qt.AlignTop)
@@ -3433,6 +3603,10 @@ class DictionaryView(QWidget):
 # =====================================================================
 
 class SettingsView(QWidget):
+    # Update-Check läuft in einem Daemon-Thread; das Ergebnis (None oder
+    # (tag, url)) wird über dieses Signal zurück in den Main-Thread gehoben.
+    update_check_result = Signal(object)
+
     FORM_QSS = (
         # FormLayout-Labels weicher als der Default-Body-Text:
         "QFormLayout > QLabel, QLabel[role=\"form-label\"] {"
@@ -3529,6 +3703,16 @@ class SettingsView(QWidget):
         self._notify_cb.toggled.connect(self._on_notify_toggled)
         gl.addRow(self._form_label(""), self._notify_cb)
 
+        self._error_reporting_cb = QCheckBox("Anonyme Fehlerberichte senden (EU, opt-out)")
+        self._error_reporting_cb.setToolTip(
+            "Nur echte Fehler/Crashes + Umgebung (OS, CPU, App-Version) an unser "
+            "Sentry-Projekt (EU). KEINE Transkripte/Clipboard/getippter Text. "
+            "Wirkt beim naechsten Start."
+        )
+        self._error_reporting_cb.setChecked(bool(self.app.config.get("error_reporting", True)))
+        self._error_reporting_cb.toggled.connect(self._on_error_reporting_toggled)
+        gl.addRow(self._form_label(""), self._error_reporting_cb)
+
         v.addWidget(general)
 
         # --- Ollama-Block ---
@@ -3618,8 +3802,8 @@ class SettingsView(QWidget):
         info_box.setObjectName("OllamaInfoBox")
         info_box.setStyleSheet(
             "#OllamaInfoBox {"
-            " background: rgba(99, 102, 241, 0.08);"
-            " border: 1px solid rgba(99, 102, 241, 0.32);"
+            " background: rgba(27, 138, 153, 0.08);"
+            " border: 1px solid rgba(27, 138, 153, 0.32);"
             " border-radius: 10px;"
             "}"
         )
@@ -3681,7 +3865,7 @@ class SettingsView(QWidget):
         self._danger_section.setObjectName("OllamaDangerZone")
         self._danger_section.setStyleSheet(
             "#OllamaDangerZone {"
-            f" border-top: 1px solid rgba(239, 68, 68, 0.22);"
+            f" border-top: 1px solid rgba(192, 73, 47, 0.22);"
             "}"
         )
         dv = QVBoxLayout(self._danger_section)
@@ -3715,6 +3899,44 @@ class SettingsView(QWidget):
         ob.addWidget(self._danger_section)
 
         v.addWidget(self._ollama_box)
+
+        # --- Über IQspeakr ---
+        about_box = QGroupBox("Über IQspeakr")
+        abl = QVBoxLayout(about_box)
+        abl.setSpacing(12)
+        abl.setContentsMargins(0, 4, 0, 0)
+
+        ver_lbl = QLabel(f"Version v{__version__}")
+        ver_lbl.setStyleSheet(f"color: {THEME_TEXT};")
+        abl.addWidget(ver_lbl)
+
+        upd_row = QHBoxLayout()
+        upd_row.setSpacing(10)
+        self._update_check_btn = QPushButton("Auf Updates pruefen")
+        self._update_check_btn.clicked.connect(self._on_check_update_clicked)
+        upd_row.addWidget(self._update_check_btn)
+        self._open_release_btn = QPushButton("Release-Seite oeffnen")
+        self._open_release_btn.setProperty("role", "primary")
+        self._open_release_btn.setVisible(False)
+        self._open_release_btn.clicked.connect(self._on_open_release_clicked)
+        upd_row.addWidget(self._open_release_btn)
+        upd_row.addStretch(1)
+        abl.addLayout(upd_row)
+
+        self._update_status_lbl = QLabel("")
+        self._update_status_lbl.setWordWrap(True)
+        self._update_status_lbl.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
+        abl.addWidget(self._update_status_lbl)
+
+        self._pending_update_url = None
+        self.update_check_result.connect(self._on_update_check_result)
+        v.addWidget(about_box)
+
+        # Falls der Hintergrund-Check beim Start schon ein Update gefunden
+        # hat, direkt anzeigen.
+        pre = getattr(self.app, "update_available", None)
+        if pre:
+            self._on_update_check_result(pre)
 
         v.addStretch(1)
 
@@ -3812,6 +4034,40 @@ class SettingsView(QWidget):
     def _on_notify_toggled(self, on):
         self.app.config["notify_enabled"] = bool(on)
         save_config(self.app.config)
+
+    def _on_error_reporting_toggled(self, on):
+        self.app.config["error_reporting"] = bool(on)
+        save_config(self.app.config)
+
+    def _on_check_update_clicked(self):
+        self._update_check_btn.setEnabled(False)
+        self._update_status_lbl.setText("Suche nach Updates…")
+
+        def _worker():
+            result = check_for_update()
+            self.update_check_result.emit(result)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_check_result(self, result):
+        # Läuft im Main-Thread (queued connection vom Worker-Thread).
+        self._update_check_btn.setEnabled(True)
+        if result:
+            tag, url = result
+            self._pending_update_url = url
+            self._update_status_lbl.setText(f"Update verfuegbar: {tag}")
+            self._open_release_btn.setVisible(bool(url))
+        else:
+            self._pending_update_url = None
+            self._open_release_btn.setVisible(False)
+            self._update_status_lbl.setText("Du nutzt die aktuelle Version.")
+
+    def _on_open_release_clicked(self):
+        if self._pending_update_url:
+            try:
+                QDesktopServices.openUrl(QUrl(self._pending_update_url))
+            except Exception as e:
+                log.warning(f"Release-Seite konnte nicht geoeffnet werden: {e}")
 
     def _on_cleanup_toggled(self, on):
         self.app.config["cleanup_enabled"] = bool(on)
@@ -4184,7 +4440,8 @@ class MainWindow(QMainWindow):
         cwl.setSpacing(0)
 
         self._stack = QStackedWidget()
-        cwl.addWidget(self._stack)
+        cwl.addWidget(self._stack, 1)
+        cwl.addWidget(self._build_footer(), 0)
         h.addWidget(content_wrap, 1)
 
         self.home_view = HomeView(self.app)
@@ -4215,6 +4472,33 @@ class MainWindow(QMainWindow):
         #     rebuild_menu_sig, das eh nach jedem Settings-Change feuert).
         self.app.ollama_mgr.state_changed.connect(self._on_ollama_state)
         self.app.rebuild_menu_sig.connect(self._on_settings_changed)
+
+    def _build_footer(self):
+        footer = QFrame()
+        footer.setObjectName("GlobalFooter")
+        footer.setFixedHeight(38)
+        footer.setStyleSheet(
+            f"#GlobalFooter {{ background: {THEME_BG_SIDEBAR}; "
+            f"border-top: 1px solid {THEME_BORDER}; }}"
+        )
+        lay = QHBoxLayout(footer)
+        lay.setContentsMargins(20, 0, 20, 0)
+        lay.setSpacing(8)
+        credit = QLabel(
+            'by Gaetano Ficarra &middot; '
+            '<a style="color:%s; text-decoration:none;" '
+            'href="https://www.skool.com/business-auf-autopilot-9397/about">'
+            'Business auf Autopilot</a>' % THEME_ACCENT
+        )
+        credit.setOpenExternalLinks(True)
+        credit.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        credit.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
+        lay.addWidget(credit)
+        lay.addStretch(1)
+        ver = QLabel(f"v{__version__}")
+        ver.setStyleSheet(f"color: {THEME_TEXT_MUTED}; font-size: 12px;")
+        lay.addWidget(ver)
+        return footer
 
     def _on_top_nav_changed(self, row):
         if 0 <= row < len(self.NAV_ITEMS):
@@ -4344,6 +4628,8 @@ class IQspeakrApp(QObject):
 
         self.cleanup_enabled = self.config["cleanup_enabled"]
         self.ollama_available = False
+        # Ergebnis des Hintergrund-Update-Checks: None oder (tag, url).
+        self.update_available = None
 
         # History + Stats + Wörterbuch + Ollama-Manager. main_window wird
         # lazy beim ersten Open instanziiert.
@@ -4393,6 +4679,20 @@ class IQspeakrApp(QObject):
         self._listener.daemon = True
         self._listener.start()
         log.info("pynput Keyboard-Listener aktiv - Hotkey-Erkennung läuft")
+
+        # Hintergrund-Update-Check (nur Hinweis, kein Auto-Install). Blockiert
+        # den Start nicht; GUI-Updates laufen ausschließlich über Signals.
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self):
+        try:
+            result = check_for_update()
+            if result:
+                self.update_available = result
+                tag = result[0]
+                self.notify_sig.emit("IQspeakr-Update", f"{tag} ist verfuegbar", "info")
+        except Exception as e:
+            log.info(f"Update-Check uebersprungen: {e}")
 
     # --- Slots (laufen immer im Main-Thread) ---
 
@@ -5239,6 +5539,10 @@ def main():
     multiprocessing.freeze_support()
 
     log.info(f"main() start - Python {sys.version.split()[0]}")
+
+    # Daten-Backup VOR jeglicher IQspeakrApp-Initialisierung (rein additiv,
+    # Fehler werden geschluckt).
+    _backup_user_data()
 
     # QApplication + Splash existieren bereits aus dem frühen Bootstrap
     # ganz oben in dieser Datei. Hier nur die Referenz übernehmen.
