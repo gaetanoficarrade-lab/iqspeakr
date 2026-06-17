@@ -84,7 +84,7 @@ RELEASE_ASSET_SUFFIX = ".dmg"
 # (das ".de." = EU-Region). Leer = Fehlerreporting komplett aus.
 # Die Env-Variable IQSPEAKR_SENTRY_DSN ist NUR fuer die Entwicklung gedacht
 # (beim User existiert sie nicht) und ueberschreibt die eingebackene DSN.
-_SENTRY_DSN_BAKED = ""
+_SENTRY_DSN_BAKED = "https://2368ab5a2e0784e946645c76ba85f1af@o4511583203164160.ingest.de.sentry.io/4511583216205904"
 SENTRY_DSN = os.environ.get("IQSPEAKR_SENTRY_DSN", _SENTRY_DSN_BAKED)
 
 

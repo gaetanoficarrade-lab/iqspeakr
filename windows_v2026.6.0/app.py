@@ -266,7 +266,7 @@ RELEASE_ASSET_SUFFIX = ".exe"
 #  error_reporting passiert nichts. Liest die Config-Datei direkt, weil
 #  load_config() / DEFAULT_CONFIG hier noch nicht definiert sind.
 # =====================================================================
-_SENTRY_DSN_BAKED = ""
+_SENTRY_DSN_BAKED = "https://2368ab5a2e0784e946645c76ba85f1af@o4511583203164160.ingest.de.sentry.io/4511583216205904"
 SENTRY_DSN = os.environ.get("IQSPEAKR_SENTRY_DSN", _SENTRY_DSN_BAKED)
 
 
