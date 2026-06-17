@@ -209,7 +209,7 @@ Hauptfenster wird beim Schließen versteckt, App lebt im Tray weiter. Tray-Icon-
 ### Aus Source starten
 
 ```powershell
-cd windows_v3
+cd windows_v2026.6.0
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
@@ -219,7 +219,7 @@ python app.py
 ### Build (.exe + Setup.exe)
 
 ```powershell
-cd windows_v3
+cd windows_v2026.6.0
 .\build_installer.ps1 -Rebuild
 ```
 

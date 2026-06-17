@@ -8,8 +8,8 @@ sowie die v5-Erweiterungen (silent in-app Ollama-Install, Eigennamen-
 Woerterbuch, deterministischer Launcher-Build fuer stabile TCC-Permissions).
 
 `../macos/` bleibt als stabiles Backup. v2 ist der Tahoe-TCC-Fix, v3 die
-Polish-Variante (eingefroren). v7 baut auf v6 auf — Aenderungen ab jetzt
-nur hier in `macos_v7/`.
+Polish-Variante (eingefroren). Diese Version (Produkt-Version **2026.6.0**,
+Ordner `macos_v2026.6.0/`) baut auf v6 auf — Aenderungen ab jetzt nur hier.
 
 ## Was v7 anders macht (Überblick)
 
@@ -100,7 +100,7 @@ CoreAudio-Deadlock-Schutz (Stream-Cleanup im Background-Thread) bleiben.
 ## Entwicklung
 
 ```bash
-cd macos_v7
+cd macos_v2026.6.0
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
