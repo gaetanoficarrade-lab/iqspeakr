@@ -8,6 +8,13 @@ PATH-Setup, Paste-Key, Dock-Icon) sind Mac-nativ. STT nutzt openai-whisper
 mit automatischer MPS-Auswahl (Apple-Silicon-GPU).
 """
 
+# =====================================================================
+# IQspeakr — Copyright © 2026 Gaetano Ficarra. Alle Rechte vorbehalten.
+# Proprietaer / source-available. Siehe LICENSE im Repo-Root.
+# Die Urheber-/Namensnennung "by Gaetano Ficarra" (UI-Footer + dieser
+# Hinweis) darf laut Lizenz nicht entfernt werden.
+# =====================================================================
+
 import os
 
 # ffmpeg-PATH (openai-whisper braucht ffmpeg für manche Dateiformate nicht,

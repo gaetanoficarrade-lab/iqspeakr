@@ -4,6 +4,13 @@ IQspeakr - Lokale Sprache-zu-Text App für Windows
 (Qt-basiert: PySide6 QSystemTrayIcon + QWidget-Overlay.)
 """
 
+# =====================================================================
+# IQspeakr — Copyright © 2026 Gaetano Ficarra. Alle Rechte vorbehalten.
+# Proprietaer / source-available. Siehe LICENSE im Repo-Root.
+# Die Urheber-/Namensnennung "by Gaetano Ficarra" (UI-Footer + dieser
+# Hinweis) darf laut Lizenz nicht entfernt werden.
+# =====================================================================
+
 import os
 
 # faster-whisper nutzt CTranslate2 (kein torch/MKL). Der frühere
