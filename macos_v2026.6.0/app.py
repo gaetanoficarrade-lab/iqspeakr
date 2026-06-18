@@ -76,7 +76,7 @@ if not getattr(sys, "frozen", False) and sys.stderr is not None:
 #  oder Umgebungsvariable IQSPEAKR_NO_TELEMETRY=1. Ohne gesetzte DSN
 #  (Build-Zeit-Konstante / Env) passiert ohnehin nichts.
 # =====================================================================
-__version__ = "2026.6.3"
+__version__ = "2026.6.4"
 
 # Auto-Updater: nur Hinweis + Release-Seite oeffnen (KEIN Auto-Install).
 # mac und win teilen sich EIN GitHub-Repo; jede Linie filtert nach ihrem
@@ -179,6 +179,104 @@ def sentry_note(message, level="warning", **extra):
             sentry_sdk.capture_message(message, level=level)
     except Exception:
         pass
+
+
+# =====================================================================
+#  Manueller Diagnose-Versand (PIN-geschützt)
+#  Erlaubt dem User, auf Aufforderung einen Diagnose-Bericht (Logs, System,
+#  Einstellungen) an den Entwickler zu senden. Geschützt per PIN, damit kein
+#  versehentlicher/massenhafter Versand passiert. Diktierter Text wird aus dem
+#  Log redigiert, API-Keys werden nie mitgesendet.
+# =====================================================================
+
+# SHA-256 der Diagnose-PIN (NICHT die Klartext-PIN — der Code ist public).
+# Soft-Gate gegen versehentlichen/massenhaften Versand, kein harter Schutz.
+DIAGNOSTIC_PIN_SHA256 = (
+    "330d473c7f8be7f09934b981184302bc59fd41c09f377312f8e5661b512bca37"
+)
+
+# Log-Zeilen mit diesen Markern tragen diktierten/eingefuegten Text -> der in
+# Anfuehrungszeichen stehende Inhalt wird vor dem Senden redigiert.
+_LOG_TEXT_MARKERS = (
+    "Whisper-Ergebnis", "API-Ergebnis", "Bereinigter Text",
+    "Wörterbuch-Korrektur", "Woerterbuch", "Eingefuegt", "Auto-Lernen",
+    "Phantom-Text", "verwerfe", "gelernt",
+)
+
+
+def _check_diagnostic_pin(entered):
+    try:
+        import hashlib
+        return (hashlib.sha256((entered or "").strip().encode("utf-8"))
+                .hexdigest() == DIAGNOSTIC_PIN_SHA256)
+    except Exception:
+        return False
+
+
+def _redact_log_text(text):
+    """Entfernt diktierten/eingefuegten Text (Inhalt in '...') aus Log-Zeilen,
+    die solchen Text tragen. Errors/Timings/Permission-Logs bleiben erhalten."""
+    out = []
+    for line in text.splitlines():
+        if any(m in line for m in _LOG_TEXT_MARKERS):
+            line = re.sub(r"'[^']*'", "'[redigiert]'", line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _read_tail(path, max_bytes, redact=False):
+    """Letzte max_bytes eines Logs als Text (utf-8, fehlertolerant)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode("utf-8", "replace")
+        return _redact_log_text(data) if redact else data
+    except Exception:
+        return ""
+
+
+def send_diagnostic_to_sentry(summary, attachments):
+    """Sendet den Diagnose-Bericht an Sentry. Initialisiert den Client bei
+    Bedarf einmalig (der Versand ist eine ausdrueckliche, PIN-bestaetigte
+    Nutzeraktion — auch wenn Telemetrie sonst aus ist). Gibt (ok, msg)."""
+    if not SENTRY_DSN:
+        return False, "Kein Reporting-Ziel konfiguriert."
+    try:
+        import sentry_sdk
+    except Exception:
+        return False, "Sentry-SDK nicht verfügbar."
+    try:
+        try:
+            client = sentry_sdk.Hub.current.client
+        except Exception:
+            client = None
+        if client is None:
+            sentry_sdk.init(
+                dsn=SENTRY_DSN, release=f"iqspeakr@{__version__}",
+                environment="production", traces_sample_rate=0.0,
+                send_default_pii=False, include_local_variables=False,
+            )
+            sentry_sdk.set_tag("platform_variant", "macos")
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("report_type", "manual_diagnostic")
+            scope.set_extra("diagnose", summary[:8000])
+            for name, data in (attachments or []):
+                try:
+                    scope.add_attachment(bytes=data, filename=name)
+                except Exception:
+                    pass
+            event_id = sentry_sdk.capture_message(
+                "Manueller Diagnose-Bericht", level="info",
+            )
+        try:
+            sentry_sdk.flush(timeout=10)
+        except Exception:
+            pass
+        return True, f"Bericht gesendet. Referenz: {event_id}"
+    except Exception as e:
+        return False, f"Senden fehlgeschlagen: {str(e)[:120]}"
 
 
 # faulthandler liefert bei C-Level-Crashes Python-Frame + Thread-Dump.
@@ -1518,6 +1616,25 @@ def _audio_to_wav_bytes(audio_data, sample_rate):
     return buf.getvalue()
 
 
+def _http_error_body(e):
+    """Liest den Antwort-Body eines urllib.HTTPError (enthaelt bei Groq/OpenAI
+    die konkrete Fehlerursache als JSON). Gekuerzt, fehlertolerant."""
+    try:
+        raw = e.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+    try:
+        data = json.loads(raw)
+        err = data.get("error")
+        if isinstance(err, dict):
+            return (err.get("message") or "")[:300]
+        if isinstance(err, str):
+            return err[:300]
+    except Exception:
+        pass
+    return raw[:300]
+
+
 def _multipart_post(url, token, fields, file_field, filename, file_bytes,
                     timeout=60):
     """Minimaler multipart/form-data-POST via urllib. fields = dict[str,str],
@@ -1551,8 +1668,13 @@ def _multipart_post(url, token, fields, file_field, filename, file_bytes,
     req.add_header(
         "Content-Type", f"multipart/form-data; boundary={boundary}"
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # WICHTIG: Den Fehlertext des Servers mitnehmen — sonst steht im Log
+        # nur "HTTP Error 400" ohne den Grund (z.B. falsches Modell/Format).
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {_http_error_body(e)}")
 
 
 def transcribe_via_api(audio_data, sample_rate, provider, api_key, language):
@@ -1605,8 +1727,11 @@ def cleanup_via_api(text, prompt_template, provider, api_key, names=None):
     req.add_header("Content-Type", "application/json")
     # 20s reichen fuer Cleanup; danach faellt _cleanup_text auf Ollama/Roh-Text
     # zurueck, statt die naechste Aufnahme lange zu blockieren.
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {_http_error_body(e)}")
     choices = result.get("choices") or []
     if not choices:
         return text
@@ -1629,7 +1754,7 @@ def verify_api_key(provider, api_key, timeout=12):
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return False, "API-Key ungueltig oder ohne Berechtigung (401/403)."
-        return False, f"Server-Fehler {e.code}. Spaeter erneut versuchen."
+        return False, f"Server-Fehler {e.code}: {_http_error_body(e)}"
     except Exception as e:
         return False, f"Verbindung fehlgeschlagen: {str(e)[:80]}"
 
@@ -4360,6 +4485,8 @@ class SettingsView(QWidget):
     _update_checked_sig = Signal(object)
     # API-Key-Test laeuft im Worker-Thread -> (ok, message) zurueck in Main.
     _api_test_sig = Signal(bool, str)
+    # Diagnose-Versand laeuft im Worker-Thread -> (ok, message) zurueck in Main.
+    _diag_sent_sig = Signal(bool, str)
 
     def __init__(self, app, parent=None):
         super().__init__(parent)
@@ -4651,6 +4778,9 @@ class SettingsView(QWidget):
         self._update_checked_sig.connect(self._on_update_checked)
         v.addWidget(about_box)
 
+        # --- Diagnose & Support (PIN-geschützter Bericht) ---
+        self._build_diagnostics_box(v)
+
         # Falls der Startup-Check schon ein Update gefunden hat, hier zeigen.
         pending = getattr(self.app, "_pending_update", None)
         if pending:
@@ -4833,6 +4963,123 @@ class SettingsView(QWidget):
     def _on_autolearn_toggled(self, on):
         self.app.config["dict_autolearn"] = bool(on)
         save_config(self.app.config)
+
+    # --- Diagnose & Support (PIN-geschützter Bericht) ---
+    def _build_diagnostics_box(self, parent_layout):
+        box = QGroupBox("Diagnose & Support")
+        bl = QVBoxLayout(box)
+        bl.setSpacing(14)
+        bl.setContentsMargins(0, 4, 0, 0)
+
+        info = QLabel(
+            "Wenn etwas nicht funktioniert, kannst du hier einen "
+            "<b>Diagnose-Bericht</b> an den Entwickler senden: Logs, System-"
+            "Infos und deine Einstellungen — <b>ohne</b> diktierte Texte und "
+            "<b>ohne</b> API-Keys. Das hilft, Fehler schnell zu finden.<br><br>"
+            "Das Senden ist mit einer <b>PIN</b> geschützt (verhindert "
+            "versehentliches/mehrfaches Senden). Die PIN bekommst du direkt "
+            "von Gaetano — bitte nur senden, wenn er dich darum bittet."
+        )
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.RichText)
+        info.setStyleSheet(f"color: {THEME_TEXT_SECONDARY}; font-size: 13px;")
+        bl.addWidget(info)
+
+        # "Diagnose erstellen" — lokal anschauen, was gesendet würde.
+        create_row = QHBoxLayout()
+        self._diag_create_btn = QPushButton("Diagnose erstellen")
+        self._diag_create_btn.setToolTip(
+            "Schreibt den Bericht in ~/IQspeakr-Diagnose.txt und öffnet ihn — "
+            "so siehst du genau, was gesendet würde."
+        )
+        self._diag_create_btn.clicked.connect(self._on_diag_create_clicked)
+        create_row.addWidget(self._diag_create_btn)
+        create_row.addStretch(1)
+        bl.addLayout(create_row)
+
+        # PIN-Feld + "Bericht senden".
+        send_form = QFormLayout()
+        send_form.setHorizontalSpacing(20)
+        send_form.setVerticalSpacing(10)
+        send_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        send_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        self._diag_pin_edit = QLineEdit()
+        self._diag_pin_edit.setEchoMode(QLineEdit.Password)
+        self._diag_pin_edit.setPlaceholderText("PIN von Gaetano")
+        self._diag_pin_edit.setMaximumWidth(220)
+        send_form.addRow(self._form_label("PIN"), self._diag_pin_edit)
+        bl.addLayout(send_form)
+
+        send_row = QHBoxLayout()
+        self._diag_send_btn = QPushButton("Bericht senden")
+        self._diag_send_btn.setProperty("role", "primary")
+        self._diag_send_btn.clicked.connect(self._on_diag_send_clicked)
+        send_row.addWidget(self._diag_send_btn)
+        send_row.addStretch(1)
+        bl.addLayout(send_row)
+
+        self._diag_status_lbl = QLabel("")
+        self._diag_status_lbl.setWordWrap(True)
+        self._diag_status_lbl.setStyleSheet(
+            f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;"
+        )
+        bl.addWidget(self._diag_status_lbl)
+
+        self._diag_sent_sig.connect(self._on_diag_sent)
+        parent_layout.addWidget(box)
+
+    def _on_diag_create_clicked(self):
+        try:
+            summary, attachments = self.app.collect_diagnostic()
+            note = ("\n\n--- Anhänge, die mitgesendet würden ---\n"
+                    + "\n".join(f"- {n} ({len(d)} Bytes)"
+                                for n, d in attachments)
+                    + "\n\n(Diktierte Texte sind in den Logs als "
+                    "'[redigiert]' entfernt; API-Keys werden nie mitgesendet.)")
+            path = str(Path.home() / "IQspeakr-Diagnose.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(summary + note)
+            self._diag_status_lbl.setStyleSheet(
+                f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;"
+            )
+            self._diag_status_lbl.setText(
+                f"Diagnose erstellt: {path} (wird geöffnet)."
+            )
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as e:
+            self._diag_status_lbl.setStyleSheet("color: #C0492F; font-size: 12px;")
+            self._diag_status_lbl.setText(f"Konnte Diagnose nicht erstellen: {str(e)[:120]}")
+
+    def _on_diag_send_clicked(self):
+        if not _check_diagnostic_pin(self._diag_pin_edit.text()):
+            self._diag_status_lbl.setStyleSheet("color: #C0492F; font-size: 12px;")
+            self._diag_status_lbl.setText(
+                "Falsche PIN. Die PIN bekommst du direkt von Gaetano (Entwickler)."
+            )
+            return
+        self._diag_send_btn.setEnabled(False)
+        self._diag_status_lbl.setStyleSheet(
+            f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;"
+        )
+        self._diag_status_lbl.setText("Erstelle Bericht und sende…")
+
+        def _worker():
+            try:
+                summary, attachments = self.app.collect_diagnostic()
+                ok, msg = send_diagnostic_to_sentry(summary, attachments)
+            except Exception as e:
+                ok, msg = False, f"Fehler: {str(e)[:120]}"
+            self._diag_sent_sig.emit(ok, msg)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_diag_sent(self, ok, msg):
+        self._diag_send_btn.setEnabled(True)
+        color = THEME_ACCENT if ok else "#C0492F"
+        self._diag_status_lbl.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self._diag_status_lbl.setText(msg)
+        if ok:
+            self._diag_pin_edit.clear()
 
     def _change_hotkey(self):
         # iqspeakr_app=self.app gibt dem Dialog Zugriff auf den globalen
@@ -6372,6 +6619,76 @@ class IQspeakrApp(QObject):
         Tray-Toggle und Cleanup-Routing."""
         return self._api_active() or self.ollama_mgr.is_ready()
 
+    def collect_diagnostic(self):
+        """Baut den Diagnose-Bericht: (lesbarer Text, [(dateiname, bytes), ...]).
+        Enthaelt System-/Rechte-/Status-Infos + sanitisierte Einstellungen
+        (OHNE API-Keys) + redigierte Log-Ausschnitte (OHNE diktierten Text)."""
+        import platform
+        L = []
+        L.append("=== IQspeakr Diagnose ===")
+        L.append(f"Version:   {__version__}")
+        try:
+            L.append(f"Zeit:      {datetime.now().isoformat(timespec='seconds')}")
+        except Exception:
+            pass
+        L.append(f"macOS:     {platform.mac_ver()[0]}   Arch: {platform.machine()}")
+        L.append(f"Python:    {sys.version.split()[0]}")
+        # Rechte-Status (die häufigste Fehlerquelle)
+        try:
+            from Quartz import CGPreflightListenEventAccess
+            listen = bool(CGPreflightListenEventAccess())
+        except Exception:
+            listen = "?"
+        try:
+            from ApplicationServices import AXIsProcessTrusted
+            ax = bool(AXIsProcessTrusted())
+        except Exception:
+            ax = "?"
+        L.append(f"Eingabeueberwachung (Hotkey):       {listen}")
+        L.append(f"Bedienungshilfen (Paste/Lernen):    {ax}")
+        try:
+            lr = bool(self._listener and self._listener.running)
+            la = bool(self._listener and self._listener.is_alive())
+        except Exception:
+            lr = la = "?"
+        L.append(f"Hotkey-Listener:  running={lr} alive={la}")
+        L.append(f"Modell geladen:   {self.model is not None}")
+        try:
+            L.append(f"Ollama-State:     {self.ollama_mgr.state()}")
+        except Exception:
+            pass
+        L.append(f"Cloud-API aktiv:  {self._api_active()} "
+                 f"(Provider {self.config.get('api_provider')})")
+        # Einstellungen — API-Keys NICHT im Klartext, nur gesetzt/leer.
+        safe = dict(self.config)
+        for k in list(safe):
+            if k.startswith("api_key"):
+                safe[k] = "gesetzt" if safe[k] else "leer"
+        L.append("")
+        L.append("Einstellungen:")
+        try:
+            L.append(json.dumps(safe, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+        summary = "\n".join(str(x) for x in L)
+
+        attachments = []
+        log_tail = _read_tail(
+            str(Path.home() / "IQspeakr.log"), 120_000, redact=True,
+        )
+        if log_tail:
+            attachments.append(
+                ("iqspeakr-log.txt", log_tail.encode("utf-8", "replace"))
+            )
+        crash_tail = _read_tail(
+            str(Path.home() / "IQspeakr.crash.log"), 40_000, redact=False,
+        )
+        if crash_tail.strip():
+            attachments.append(
+                ("iqspeakr-crash.txt", crash_tail.encode("utf-8", "replace"))
+            )
+        return summary, attachments
+
     def _cleanup_text(self, text):
         # Cleanup laeuft entweder ueber die Cloud-API (wenn aktiv) oder ueber
         # lokales Ollama. Style-Prompt wird aus der config gebaut
@@ -6673,10 +6990,22 @@ class IQspeakrApp(QObject):
                     used_api = True
                     log.info(f"API-Ergebnis ({provider}): '{raw_text}'")
                 except Exception as e:
-                    log.warning(f"API-Transkription fehlgeschlagen, "
-                                f"Fallback auf lokales Whisper: {e}")
+                    reason = str(e)[:160]
+                    log.warning(f"API-Transkription fehlgeschlagen ({provider}), "
+                                f"Fallback auf lokales Whisper: {reason}")
                     sentry_note("API-Transkription fehlgeschlagen",
-                                level="warning", provider=provider)
+                                level="warning", provider=provider,
+                                reason=reason)
+                    # Den echten Grund EINMAL pro Session sichtbar machen, damit
+                    # der User nicht raetselt, warum die Cloud-Erkennung "nichts
+                    # tut" (sie faellt still auf lokal zurueck).
+                    if not getattr(self, "_api_error_notified", False):
+                        self._api_error_notified = True
+                        self._notify(
+                            f"IQspeakr - {provider}-API Problem",
+                            f"Cloud-Erkennung fehlgeschlagen, nutze lokales "
+                            f"Whisper. Grund: {reason}",
+                        )
 
             # --- Lokales Whisper (Default oder API-Fallback) ---
             if not used_api:
