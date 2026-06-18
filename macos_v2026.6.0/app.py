@@ -6790,7 +6790,12 @@ class IQspeakrApp(QObject):
     # alphabetische Woerter, keine Funktionswoerter — damit das Woerterbuch
     # nicht versehentlich harmlose Woerter global umschreibt.
 
-    _AUTOLEARN_DELAY = 6.0  # Sekunden bis zum Nachlesen
+    # Statt EINMAL nach X Sekunden zu prüfen, beobachten wir das Zielfeld über
+    # ein Fenster hinweg in kurzen Abständen. So erwischen wir die Korrektur,
+    # egal WANN der User sie macht (vorher hat ein starrer Single-Check oft
+    # gar nichts gesehen).
+    _AUTOLEARN_POLL_INTERVAL = 1.2   # Sekunden zwischen zwei Lesungen
+    _AUTOLEARN_WINDOW = 30.0         # Gesamt-Beobachtungsfenster in Sekunden
     _AUTOLEARN_STOPWORDS = {
         "oder", "aber", "denn", "dann", "auch", "noch", "doch", "sehr",
         "eine", "einen", "einem", "eines", "nicht", "sind", "haben", "wird",
@@ -6844,51 +6849,89 @@ class IQspeakrApp(QObject):
                 return  # ohne Bedienungshilfen koennen wir nichts lesen
         except Exception:
             return
-        QTimer.singleShot(600, lambda: self._autolearn_snapshot(inserted_text))
+        QTimer.singleShot(500, lambda: self._autolearn_start(inserted_text))
 
-    def _autolearn_snapshot(self, inserted_text):
-        """Main-Thread. Liest den Ist-Zustand des Zielfelds und plant das
-        Nachlesen nach _AUTOLEARN_DELAY Sekunden."""
+    def _autolearn_start(self, inserted_text):
+        """Main-Thread. Liest den Ausgangszustand des Zielfelds und startet die
+        Beobachtungs-Schleife. Loggt klar, falls die App kein auslesbares Feld
+        bietet (haeufig bei Browsern/Electron) — damit man im IQspeakr.log
+        sieht, warum nichts gelernt wurde."""
         element, v0 = self._ax_focused_value()
         if element is None or v0 is None:
+            log.info(
+                "Auto-Lernen: Zielfeld nicht auslesbar (App gibt keinen "
+                "AX-Wert frei, z.B. manche Browser/Electron) - uebersprungen."
+            )
             return
         self._autolearn_token += 1
         token = self._autolearn_token
+        polls = max(1, int(self._AUTOLEARN_WINDOW / self._AUTOLEARN_POLL_INTERVAL))
         self._autolearn_pending = {
-            "element": element, "v0": v0, "inserted": inserted_text,
-            "token": token,
+            "element": element, "v0": v0, "prev": v0,
+            "inserted": inserted_text, "token": token, "polls_left": polls,
+            "misses": 0,
         }
+        log.info(
+            f"Auto-Lernen aktiv: beobachte Zielfeld ({len(v0)} Zeichen) "
+            f"~{int(self._AUTOLEARN_WINDOW)}s auf Ein-Wort-Korrekturen."
+        )
         QTimer.singleShot(
-            int(self._AUTOLEARN_DELAY * 1000),
-            lambda: self._check_autolearn(token),
+            int(self._AUTOLEARN_POLL_INTERVAL * 1000),
+            lambda: self._autolearn_poll(token),
         )
 
-    def _check_autolearn(self, token):
-        """Liest das Zielfeld erneut und lernt eine Ein-Wort-Korrektur.
-        Laeuft im Main-Thread (per QTimer geplant)."""
+    def _autolearn_poll(self, token):
+        """Main-Thread. Liest das Zielfeld erneut und vergleicht es mit dem
+        Ausgangszustand (v0) UND dem letzten Stand (prev). Findet sich eine
+        Ein-Wort-Korrektur -> lernen + stoppen. Sonst weiter beobachten, bis
+        das Fenster ablaeuft."""
+        pending = self._autolearn_pending
+        if not pending or pending.get("token") != token:
+            return  # neue Aufnahme hat diese Beobachtung abgeloest
         try:
-            pending = self._autolearn_pending
-            if not pending or pending.get("token") != token:
+            from ApplicationServices import AXUIElementCopyAttributeValue
+            err, cur = AXUIElementCopyAttributeValue(
+                pending["element"], "AXValue", None,
+            )
+        except Exception:
+            err, cur = 1, None
+
+        if err != 0 or not isinstance(cur, str):
+            # Feld kurz nicht lesbar (Fokuswechsel?) — ein paar Misses tolerieren.
+            pending["misses"] += 1
+            if pending["misses"] >= 3:
+                self._autolearn_pending = None
                 return
-            self._autolearn_pending = None
-            element = pending["element"]
-            v0 = pending["v0"]
+        else:
             inserted = pending["inserted"]
-            try:
-                from ApplicationServices import AXUIElementCopyAttributeValue
-                err, v1 = AXUIElementCopyAttributeValue(
-                    element, "AXValue", None,
-                )
-                if err != 0 or not isinstance(v1, str):
-                    return
-            except Exception:
+            v0 = pending["v0"]
+            prev = pending["prev"]
+            # Korrektur ggü. Ausgangstext ODER ggü. letztem Stand erkennen.
+            pair = None
+            if cur != v0:
+                pair = self._single_word_correction(inserted, v0, cur)
+            if not pair and cur != prev:
+                pair = self._single_word_correction(inserted, prev, cur)
+            if pair:
+                self._autolearn_pending = None
+                self._autolearn_commit(*pair)
                 return
-            if v1 == v0:
-                return
-            pair = self._single_word_correction(inserted, v0, v1)
-            if not pair:
-                return
-            old, new = pair
+            pending["prev"] = cur
+            pending["misses"] = 0
+
+        pending["polls_left"] -= 1
+        if pending["polls_left"] <= 0:
+            self._autolearn_pending = None
+            log.debug("Auto-Lernen: Fenster abgelaufen, keine Korrektur erkannt.")
+            return
+        QTimer.singleShot(
+            int(self._AUTOLEARN_POLL_INTERVAL * 1000),
+            lambda: self._autolearn_poll(token),
+        )
+
+    def _autolearn_commit(self, old, new):
+        """Lernt die erkannte Korrektur ins Woerterbuch (Main-Thread)."""
+        try:
             idx = self.dictionary.find_by_correct(new)
             if idx >= 0:
                 learned = self.dictionary.merge_variants(idx, [old])
@@ -6901,7 +6944,7 @@ class IQspeakrApp(QObject):
                     f"'{old}' wird künftig als '{new}' geschrieben.",
                 )
         except Exception as e:
-            log.debug(f"Auto-Lernen uebersprungen: {e}")
+            log.debug(f"Auto-Lernen-Commit uebersprungen: {e}")
 
     def _single_word_correction(self, inserted, before, after):
         """Gibt (old, new) zurueck, wenn before->after GENAU eine Ein-Wort-
@@ -6941,7 +6984,9 @@ class IQspeakrApp(QObject):
         return old, new
 
     def _is_learnable_word(self, w):
-        if len(w) < 4:
+        # >=3 Zeichen, damit auch kurze Namen (z.B. "Max") lernbar sind;
+        # Funktionswoerter fangen die Stopword-Liste + Aehnlichkeits-Check ab.
+        if len(w) < 3:
             return False
         if w.lower() in self._AUTOLEARN_STOPWORDS:
             return False
