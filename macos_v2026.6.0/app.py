@@ -76,7 +76,7 @@ if not getattr(sys, "frozen", False) and sys.stderr is not None:
 #  oder Umgebungsvariable IQSPEAKR_NO_TELEMETRY=1. Ohne gesetzte DSN
 #  (Build-Zeit-Konstante / Env) passiert ohnehin nichts.
 # =====================================================================
-__version__ = "2026.6.4"
+__version__ = "2026.6.5"
 
 # Auto-Updater: nur Hinweis + Release-Seite oeffnen (KEIN Auto-Install).
 # mac und win teilen sich EIN GitHub-Repo; jede Linie filtert nach ihrem
@@ -1577,6 +1577,12 @@ def looks_like_hallucination(text, duration):
 #  /chat/completions-Schema. KEINE neue Dependency — reines urllib.
 # =====================================================================
 
+# WICHTIG: Groq sitzt hinter Cloudflare, das den Default-User-Agent von urllib
+# ("Python-urllib/x.y") mit Fehler 1010 (403) sperrt — die Anfrage erreicht
+# Groqs Key-Pruefung dann gar nicht. Ein eigener User-Agent umgeht die Sperre.
+# OHNE diesen Header schlaegt JEDE Groq-Anfrage fehl (still -> Fallback lokal).
+API_USER_AGENT = f"IQspeakr/{__version__} (macOS)"
+
 API_PROVIDERS = {
     "groq": {
         # Speed-Default: turbo-Whisper ist ~2-4x schneller als large-v3 bei
@@ -1665,6 +1671,7 @@ def _multipart_post(url, token, fields, file_field, filename, file_bytes,
     body = crlf.join(parts)
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("User-Agent", API_USER_AGENT)
     req.add_header(
         "Content-Type", f"multipart/form-data; boundary={boundary}"
     )
@@ -1724,6 +1731,7 @@ def cleanup_via_api(text, prompt_template, provider, api_key, names=None):
         cfg["base"] + "/chat/completions", data=payload, method="POST",
     )
     req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("User-Agent", API_USER_AGENT)
     req.add_header("Content-Type", "application/json")
     # 20s reichen fuer Cleanup; danach faellt _cleanup_text auf Ollama/Roh-Text
     # zurueck, statt die naechste Aufnahme lange zu blockieren.
@@ -1748,6 +1756,7 @@ def verify_api_key(provider, api_key, timeout=12):
     try:
         req = urllib.request.Request(cfg["base"] + "/models", method="GET")
         req.add_header("Authorization", f"Bearer {api_key.strip()}")
+        req.add_header("User-Agent", API_USER_AGENT)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             json.loads(resp.read().decode("utf-8"))
         return True, "API-Key gueltig - Cloud-Spracherkennung ist bereit."
