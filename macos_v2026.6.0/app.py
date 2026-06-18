@@ -76,7 +76,7 @@ if not getattr(sys, "frozen", False) and sys.stderr is not None:
 #  oder Umgebungsvariable IQSPEAKR_NO_TELEMETRY=1. Ohne gesetzte DSN
 #  (Build-Zeit-Konstante / Env) passiert ohnehin nichts.
 # =====================================================================
-__version__ = "2026.6.1"
+__version__ = "2026.6.2"
 
 # Auto-Updater: nur Hinweis + Release-Seite oeffnen (KEIN Auto-Install).
 # mac und win teilen sich EIN GitHub-Repo; jede Linie filtert nach ihrem
@@ -1170,9 +1170,12 @@ def _parse_ver(s):
 
 
 def check_for_update(timeout=6):
-    """Gibt (tag, html_url) der neuesten passenden Release zurueck, wenn neuer als
-    __version__, sonst None. Schluckt alle Fehler (offline etc.). KEIN Download,
-    KEIN Install - nur ein Hinweis."""
+    """Gibt (tag, download_url) der neuesten passenden Release zurueck, wenn neuer
+    als __version__, sonst None. download_url zeigt DIREKT auf das .dmg-Asset
+    (nicht auf die Release-Seite) — so muss der User auf der GitHub-Seite nicht
+    zwischen DMG und den zwei Source-Code-Links unterscheiden; ein Klick laedt
+    die richtige Datei. Fallback auf die Release-Seite, falls kein Asset da ist.
+    Schluckt alle Fehler (offline etc.). KEIN Auto-Install - nur ein Hinweis."""
     try:
         import json as _json
         url = f"https://api.github.com/repos/{UPDATE_REPO}/releases"
@@ -1199,7 +1202,13 @@ def check_for_update(timeout=6):
             return None
         v = _parse_ver(latest.get("tag_name", ""))
         if cur and v and v > cur:
-            return (latest.get("tag_name", ""), latest.get("html_url"))
+            # Direkter Download-Link auf das .dmg-Asset; Fallback Release-Seite.
+            dmg_url = None
+            for a in (latest.get("assets") or []):
+                if a.get("name", "").endswith(RELEASE_ASSET_SUFFIX):
+                    dmg_url = a.get("browser_download_url")
+                    break
+            return (latest.get("tag_name", ""), dmg_url or latest.get("html_url"))
         return None
     except Exception:
         return None
@@ -1472,16 +1481,21 @@ def looks_like_hallucination(text, duration):
 
 API_PROVIDERS = {
     "groq": {
-        "label": "Groq (whisper-large-v3)",
+        # Speed-Default: turbo-Whisper ist ~2-4x schneller als large-v3 bei
+        # praktisch gleicher Qualitaet; der 8b-Instant-Chat erledigt das
+        # Cleanup spürbar schneller als das 70b-Modell. Beides zusammen macht
+        # den API-Pfad deutlich flotter (zwei API-Calls bei aktivem Cleanup).
+        "label": "Groq (whisper-large-v3-turbo, schnell)",
         "base": "https://api.groq.com/openai/v1",
-        "transcribe_model": "whisper-large-v3",
-        "chat_model": "llama-3.3-70b-versatile",
+        "transcribe_model": "whisper-large-v3-turbo",
+        "chat_model": "llama-3.1-8b-instant",
         "key_url": "https://console.groq.com/keys",
     },
     "openai": {
-        "label": "OpenAI (whisper-1)",
+        "label": "OpenAI (gpt-4o-mini-transcribe, schnell)",
         "base": "https://api.openai.com/v1",
-        "transcribe_model": "whisper-1",
+        # gpt-4o-mini-transcribe ist schneller + günstiger als whisper-1.
+        "transcribe_model": "gpt-4o-mini-transcribe",
         "chat_model": "gpt-4o-mini",
         "key_url": "https://platform.openai.com/api-keys",
     },
@@ -4621,8 +4635,11 @@ class SettingsView(QWidget):
         self._check_update_btn = QPushButton("Auf Updates prüfen")
         self._check_update_btn.clicked.connect(self._on_check_update_clicked)
         upd_row.addWidget(self._check_update_btn)
-        self._open_release_btn = QPushButton("Release-Seite öffnen")
+        self._open_release_btn = QPushButton("Update herunterladen (.dmg)")
         self._open_release_btn.setProperty("role", "primary")
+        self._open_release_btn.setToolTip(
+            "Lädt direkt die Installations-Datei (IQspeakr-…-Installer.dmg) herunter."
+        )
         self._open_release_btn.clicked.connect(self._on_open_release_clicked)
         self._open_release_btn.setVisible(False)
         upd_row.addWidget(self._open_release_btn)

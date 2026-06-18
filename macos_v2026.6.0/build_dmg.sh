@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#  IQspeakr v2026.6.1 — DMG Builder
+#  IQspeakr v2026.6.2 — DMG Builder
 #  Erstellt "IQspeakr Installer.app" und verpackt es in eine DMG
 #
 #  Pattern identisch zu v1 (macos/build_dmg.sh):
@@ -15,9 +15,9 @@ INSTALLER_SRC="$PROJECT_DIR/installer"
 BUILD_DIR="$PROJECT_DIR/build"
 DMG_CONTENT="$BUILD_DIR/dmg-content"
 INSTALLER_APP="$DMG_CONTENT/IQspeakr Installer.app"
-DMG_OUTPUT="$PROJECT_DIR/IQspeakr-v2026.6.1-Installer.dmg"
+DMG_OUTPUT="$PROJECT_DIR/IQspeakr-v2026.6.2-Installer.dmg"
 
-echo "▸ Erstelle IQspeakr v2026.6.1 Installer..."
+echo "▸ Erstelle IQspeakr v2026.6.2 Installer..."
 
 # Aufräumen — aber Caches (ffmpeg, snapshot) NICHT loeschen, sonst muessen
 # wir bei jedem Build 2 GB neu tar'en und 50 MB ffmpeg neu downloaden.
@@ -43,9 +43,9 @@ cat > "$INSTALLER_APP/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.iqspeakr.installer</string>
     <key>CFBundleVersion</key>
-    <string>2026.6.1</string>
+    <string>2026.6.2</string>
     <key>CFBundleShortVersionString</key>
-    <string>2026.6.1</string>
+    <string>2026.6.2</string>
     <key>CFBundleExecutable</key>
     <string>installer</string>
     <key>CFBundleIconFile</key>
@@ -126,7 +126,7 @@ echo "▸ Erstelle DMG..."
 rm -f "$DMG_OUTPUT"
 
 hdiutil create \
-    -volname "IQspeakr v2026.6.1 Installer" \
+    -volname "IQspeakr v2026.6.2 Installer" \
     -srcfolder "$DMG_CONTENT" \
     -ov \
     -format UDZO \
@@ -140,7 +140,7 @@ rm -rf "$DMG_CONTENT"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║  IQspeakr-v2026.6.1-Installer.dmg ist bereit!       ║"
+echo "║  IQspeakr-v2026.6.2-Installer.dmg ist bereit!       ║"
 echo "║                                              ║"
 echo "║  Pfad: $DMG_OUTPUT"
 echo "╚══════════════════════════════════════════════╝"
