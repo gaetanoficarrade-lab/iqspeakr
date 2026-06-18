@@ -84,6 +84,10 @@ $args = @(
     "--collect-all", "tokenizers",
     "--collect-submodules", "pynput",
     "--collect-submodules", "sentry_sdk",
+    # uiautomation laedt seine comtypes-Type-Libraries dynamisch nach;
+    # collect-all stellt sicher, dass alle Submodule + Data-Files dabei sind.
+    "--collect-all", "uiautomation",
+    "--collect-all", "comtypes",
     "--exclude-module", "pystray",
     "--exclude-module", "PIL.ImageTk",
     "--exclude-module", "tkinter",

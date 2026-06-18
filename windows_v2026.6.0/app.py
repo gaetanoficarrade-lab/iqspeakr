@@ -31,6 +31,7 @@ import json
 import re
 import sqlite3
 import urllib.request
+import urllib.error
 import logging
 import sys
 import time as _time
@@ -264,7 +265,7 @@ APP_ICON_PATH = os.path.join(APP_DIR, "icon.ico")
 #  Helfern (check_for_update, _init_sentry) definiert sein, weil diese
 #  __version__ / UPDATE_REPO / RELEASE_ASSET_SUFFIX referenzieren.
 # =====================================================================
-__version__ = "2026.6.0"
+__version__ = "2026.6.6"
 UPDATE_REPO = "gaetanoficarrade-lab/iqspeakr"
 RELEASE_ASSET_SUFFIX = ".exe"
 
@@ -306,12 +307,23 @@ def _init_sentry():
         if isinstance(extra, dict):
             for k in ("transcript", "text", "clipboard", "paste"):
                 extra.pop(k, None)
+        # Frame-Locals aus Tracebacks entfernen — sonst koennte ein API-Key
+        # (Funktions-Parameter in transcribe_via_api/cleanup_via_api) oder
+        # diktierter Text als lokale Variable in einem Stacktrace landen.
+        # Greift zusaetzlich zu include_local_variables=False (Gürtel + Hosenträger).
+        try:
+            for exc_val in (event.get("exception") or {}).get("values") or []:
+                for frame in (exc_val.get("stacktrace") or {}).get("frames") or []:
+                    frame.pop("vars", None)
+        except Exception:
+            pass
         return event
 
     try:
         sentry_sdk.init(
             dsn=SENTRY_DSN, release=f"iqspeakr@{__version__}",
             environment="production", traces_sample_rate=0.0, send_default_pii=False,
+            include_local_variables=False,   # KEINE Frame-Locals (API-Key/Text-Schutz)
             integrations=[LoggingIntegration(level=None, event_level=logging.ERROR)],
             before_send=_before_send,
         )
@@ -325,6 +337,414 @@ _init_sentry()
 
 
 # =====================================================================
+#  sentry_note: aktiv NICHT-Crash-Zustände an Sentry melden (No-op ohne SDK).
+#  Damit "stille" Probleme (fehlende API-Keys, Phantom-Text, Fallbacks)
+#  überhaupt im Protokoll auftauchen.
+# =====================================================================
+def sentry_note(message, level="warning", **extra):
+    """Meldet einen NICHT-Crash-Zustand aktiv an Sentry. No-op ohne SDK.
+    KEIN Transkript-Text in extra — before_send filtert ohnehin, aber wir
+    geben hier eh nur Metadaten rein."""
+    try:
+        import sentry_sdk
+        if extra:
+            with sentry_sdk.push_scope() as scope:
+                for k, v in extra.items():
+                    scope.set_extra(k, v)
+                sentry_sdk.capture_message(message, level=level)
+        else:
+            sentry_sdk.capture_message(message, level=level)
+    except Exception:
+        pass
+
+
+# =====================================================================
+#  Diagnose-Versand (PIN-geschützt). Konstanten + Helfer; die App-Methode
+#  collect_diagnostic() ist Windows-angepasst weiter unten.
+# =====================================================================
+# SHA-256 der PIN — die PIN selbst nie im Code. Bei richtiger Eingabe wird
+# der manuelle Diagnose-Bericht an Sentry gesendet.
+DIAGNOSTIC_PIN_SHA256 = (
+    "330d473c7f8be7f09934b981184302bc59fd41c09f377312f8e5661b512bca37"
+)
+
+# Log-Zeilen mit diesen Markern tragen diktierten/eingefuegten Text -> der in
+# Anfuehrungszeichen stehende Inhalt wird vor dem Senden redigiert.
+_LOG_TEXT_MARKERS = (
+    "Whisper-Ergebnis", "Whisper:", "API-Ergebnis", "Bereinigter Text",
+    "Wörterbuch-Korrektur", "Woerterbuch", "Eingefuegt", "Eingefügt",
+    "Auto-Lernen", "Phantom-Text", "verwerfe", "gelernt",
+)
+
+
+def _check_diagnostic_pin(entered):
+    try:
+        import hashlib
+        return (hashlib.sha256((entered or "").strip().encode("utf-8"))
+                .hexdigest() == DIAGNOSTIC_PIN_SHA256)
+    except Exception:
+        return False
+
+
+def _redact_log_text(text):
+    """Entfernt diktierten/eingefuegten Text (Inhalt in '...') aus Log-Zeilen,
+    die solchen Text tragen. Errors/Timings/Permission-Logs bleiben erhalten."""
+    out = []
+    for line in text.splitlines():
+        if any(m in line for m in _LOG_TEXT_MARKERS):
+            line = re.sub(r"'[^']*'", "'[redigiert]'", line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _read_tail(path, max_bytes, redact=False):
+    """Letzte max_bytes eines Logs als Text (utf-8, fehlertolerant)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode("utf-8", "replace")
+        return _redact_log_text(data) if redact else data
+    except Exception:
+        return ""
+
+
+def send_diagnostic_to_sentry(summary, attachments):
+    """Sendet den Diagnose-Bericht an Sentry. Initialisiert den Client bei
+    Bedarf einmalig (der Versand ist eine ausdrueckliche, PIN-bestaetigte
+    Nutzeraktion — auch wenn Telemetrie sonst aus ist). Gibt (ok, msg)."""
+    if not SENTRY_DSN:
+        return False, "Kein Reporting-Ziel konfiguriert."
+    try:
+        import sentry_sdk
+    except Exception:
+        return False, "Sentry-SDK nicht verfügbar."
+    try:
+        try:
+            client = sentry_sdk.Hub.current.client
+        except Exception:
+            client = None
+        if client is None:
+            sentry_sdk.init(
+                dsn=SENTRY_DSN, release=f"iqspeakr@{__version__}",
+                environment="production", traces_sample_rate=0.0,
+                send_default_pii=False, include_local_variables=False,
+            )
+            sentry_sdk.set_tag("platform_variant", "windows")
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("report_type", "manual_diagnostic")
+            scope.set_extra("diagnose", summary[:8000])
+            for name, data in (attachments or []):
+                try:
+                    scope.add_attachment(bytes=data, filename=name)
+                except Exception:
+                    pass
+            event_id = sentry_sdk.capture_message(
+                "Manueller Diagnose-Bericht", level="info",
+            )
+        try:
+            sentry_sdk.flush(timeout=10)
+        except Exception:
+            pass
+        return True, f"Bericht gesendet. Referenz: {event_id}"
+    except Exception as e:
+        return False, f"Senden fehlgeschlagen: {str(e)[:120]}"
+
+
+# =====================================================================
+#  Phantom-Filter (Whisper-Halluzinationen). Greift VOR und NACH der
+#  Transkription, damit "SWR 2020"/"Untertitel" nicht als Text erscheinen
+#  wenn der User nur kurz gestaucht oder garnix gesagt hat.
+# =====================================================================
+MIN_SPEECH_DURATION = 0.35
+# RMS-Lautstaerke (Effektivwert ueber den ganzen Clip). Unter diesem Wert ist
+# praktisch nur Raumrauschen drin -> Stille.
+SILENCE_RMS_THRESHOLD = 0.006
+# Spitzenpegel. Selbst ein einzelnes lautes Sample hebt den Peak; liegt der
+# Peak darunter, war definitiv nichts Gesprochenes dabei.
+SILENCE_PEAK_THRESHOLD = 0.02
+
+# Bekannte Whisper-Phantom-Phrasen (normalisiert: lowercase, ohne Satzzeichen).
+# Werden NUR verworfen, wenn das Audio kurz/leise war — bei echtem laengeren
+# Sprechen koennte "vielen dank" ja legitim sein.
+HALLUCINATION_PHRASES = {
+    "untertitel",
+    "untertitel im auftrag des zdf",
+    "untertitel im auftrag des zdf 2020",
+    "untertitel im auftrag des zdf 2021",
+    "untertitel von stephanie geiges",
+    "untertitelung des zdf",
+    "untertitelung des zdf 2020",
+    "untertitelung aufgrund der amara org community",
+    "untertitel der amara org community",
+    "amara org",
+    "swr",
+    "swr 2020",
+    "swr 2021",
+    "zdf",
+    "vielen dank",
+    "vielen dank fuer ihre aufmerksamkeit",
+    "danke",
+    "danke schoen",
+    "danke fuers zuschauen",
+    "tschuess",
+    "bis zum naechsten mal",
+    "untertitel im auftrag des zdf fuer funk 2017",
+    # englische Aequivalente
+    "thank you",
+    "thanks for watching",
+    "thank you for watching",
+    "you",
+    "bye",
+    "please subscribe",
+    "subscribe",
+    ".",
+}
+
+
+def _normalize_phrase(text):
+    """lowercase, Umlaute aufgeloest, Satzzeichen weg, Whitespace normiert -
+    fuer den Vergleich gegen HALLUCINATION_PHRASES."""
+    t = (text or "").lower().strip()
+    t = (t.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+         .replace("ß", "ss"))
+    t = re.sub(r"[^\w\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def audio_stats(audio_data, sample_rate):
+    """(Dauer in s, RMS, Peak) eines float32-Mono-Arrays. Schluckt nichts -
+    Aufrufer entscheidet."""
+    n = int(getattr(audio_data, "size", 0))
+    if n == 0:
+        return 0.0, 0.0, 0.0
+    duration = n / float(sample_rate)
+    rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+    peak = float(np.max(np.abs(audio_data)))
+    return duration, rms, peak
+
+
+def is_probably_silence(audio_data, sample_rate):
+    """True, wenn der Clip zu kurz oder zu leise zum echten Transkribieren
+    ist. Wird VOR Whisper aufgerufen."""
+    duration, rms, peak = audio_stats(audio_data, sample_rate)
+    if duration < MIN_SPEECH_DURATION:
+        return True
+    if rms < SILENCE_RMS_THRESHOLD and peak < SILENCE_PEAK_THRESHOLD:
+        return True
+    return False
+
+
+def looks_like_hallucination(text, duration):
+    """True, wenn der erkannte Text eine bekannte Phantom-Phrase ist UND das
+    Audio kurz war (<= 2.5 s). Bei laengerem Audio greift der Filter nicht,
+    damit echte kurze Saetze ('Vielen Dank') nicht verschluckt werden."""
+    if duration > 2.5:
+        return False
+    norm = _normalize_phrase(text)
+    if not norm:
+        return True
+    return norm in HALLUCINATION_PHRASES
+
+
+# =====================================================================
+#  Cloud-API für Spracherkennung (Groq / OpenAI). Optional, opt-in.
+#  Schaltet auch die KI-Textbereinigung ohne Ollama frei.
+# =====================================================================
+# WICHTIG: Groq sitzt hinter Cloudflare, das den Default-User-Agent von urllib
+# ("Python-urllib/x.y") mit Fehler 1010 (403) sperrt — die Anfrage erreicht
+# Groqs Key-Pruefung dann gar nicht. Ein eigener User-Agent umgeht die Sperre.
+# OHNE diesen Header schlaegt JEDE Groq-Anfrage fehl (still -> Fallback lokal).
+API_USER_AGENT = f"IQspeakr/{__version__} (Windows)"
+
+API_PROVIDERS = {
+    "groq": {
+        # Speed-Default: turbo-Whisper ist ~2-4x schneller als large-v3 bei
+        # praktisch gleicher Qualitaet; der 8b-Instant-Chat erledigt das
+        # Cleanup spürbar schneller als das 70b-Modell. Beides zusammen macht
+        # den API-Pfad deutlich flotter (zwei API-Calls bei aktivem Cleanup).
+        "label": "Groq (whisper-large-v3-turbo, schnell)",
+        "base": "https://api.groq.com/openai/v1",
+        "transcribe_model": "whisper-large-v3-turbo",
+        "chat_model": "llama-3.1-8b-instant",
+        "key_url": "https://console.groq.com/keys",
+    },
+    "openai": {
+        "label": "OpenAI (gpt-4o-mini-transcribe, schnell)",
+        "base": "https://api.openai.com/v1",
+        # gpt-4o-mini-transcribe ist schneller + günstiger als whisper-1.
+        "transcribe_model": "gpt-4o-mini-transcribe",
+        "chat_model": "gpt-4o-mini",
+        "key_url": "https://platform.openai.com/api-keys",
+    },
+}
+
+
+def _audio_to_wav_bytes(audio_data, sample_rate):
+    """float32-Mono-Array [-1..1] -> 16-bit-PCM-WAV als Bytes (in-memory).
+    Kein tempfile noetig."""
+    import io
+    import wave
+    clipped = np.clip(audio_data, -1.0, 1.0)
+    pcm16 = (clipped * 32767.0).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
+def _http_error_body(e):
+    """Liest den Antwort-Body eines urllib.HTTPError (enthaelt bei Groq/OpenAI
+    die konkrete Fehlerursache als JSON). Gekuerzt, fehlertolerant."""
+    try:
+        raw = e.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+    try:
+        data = json.loads(raw)
+        err = data.get("error")
+        if isinstance(err, dict):
+            return (err.get("message") or "")[:300]
+        if isinstance(err, str):
+            return err[:300]
+    except Exception:
+        pass
+    return raw[:300]
+
+
+def _multipart_post(url, token, fields, file_field, filename, file_bytes,
+                    timeout=60):
+    """Minimaler multipart/form-data-POST via urllib. fields = dict[str,str],
+    file_* = die Audiodatei. Gibt geparstes JSON zurueck oder wirft."""
+    # Zufalls-Boundary pro Request: schliesst aus, dass die Boundary zufaellig
+    # in den WAV-PCM-Bytes vorkommt (RFC 2046) und den Body zerlegt.
+    import uuid
+    boundary = "----IQspeakrBoundary" + uuid.uuid4().hex
+    crlf = b"\r\n"
+    parts = []
+    for name, value in fields.items():
+        parts.append(b"--" + boundary.encode())
+        parts.append(
+            ('Content-Disposition: form-data; name="%s"' % name).encode()
+        )
+        parts.append(b"")
+        parts.append(str(value).encode("utf-8"))
+    parts.append(b"--" + boundary.encode())
+    parts.append(
+        ('Content-Disposition: form-data; name="%s"; filename="%s"'
+         % (file_field, filename)).encode()
+    )
+    parts.append(b"Content-Type: audio/wav")
+    parts.append(b"")
+    parts.append(file_bytes)
+    parts.append(b"--" + boundary.encode() + b"--")
+    parts.append(b"")
+    body = crlf.join(parts)
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("User-Agent", API_USER_AGENT)
+    req.add_header(
+        "Content-Type", f"multipart/form-data; boundary={boundary}"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # WICHTIG: Den Fehlertext des Servers mitnehmen — sonst steht im Log
+        # nur "HTTP Error 400" ohne den Grund (z.B. falsches Modell/Format).
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {_http_error_body(e)}")
+
+
+def transcribe_via_api(audio_data, sample_rate, provider, api_key, language):
+    """Cloud-Transkription. Gibt den erkannten Text zurueck. Wirft bei
+    Netz-/Auth-/Server-Fehlern (Aufrufer faengt + faellt auf lokal zurueck)."""
+    cfg = API_PROVIDERS.get(provider) or API_PROVIDERS["groq"]
+    wav = _audio_to_wav_bytes(audio_data, sample_rate)
+    fields = {
+        "model": cfg["transcribe_model"],
+        "response_format": "json",
+        "temperature": "0",
+    }
+    if language and language != "auto":
+        fields["language"] = language
+    url = cfg["base"] + "/audio/transcriptions"
+    result = _multipart_post(
+        url, api_key, fields, "file", "audio.wav", wav, timeout=60,
+    )
+    return (result.get("text") or "").strip()
+
+
+def cleanup_via_api(text, prompt_template, provider, api_key, names=None):
+    """Textbereinigung ueber die Chat-API (Ersatz fuer Ollama, wenn der User
+    die API nutzt). Gibt den bereinigten Text zurueck oder wirft."""
+    cfg = API_PROVIDERS.get(provider) or API_PROVIDERS["groq"]
+    system = (
+        "Du bist ein praeziser Lektor fuer gesprochene Sprache. Du gibst "
+        "ausschliesslich den bereinigten Text zurueck, ohne Erklaerung, ohne "
+        "Anfuehrungszeichen."
+    )
+    if names:
+        system += (
+            " Behalte folgende Eigennamen exakt unveraendert: "
+            + ", ".join(names) + "."
+        )
+    user_prompt = prompt_template.format(text=text)
+    payload = json.dumps({
+        "model": cfg["chat_model"],
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+        "top_p": 0.5,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        cfg["base"] + "/chat/completions", data=payload, method="POST",
+    )
+    req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("User-Agent", API_USER_AGENT)
+    req.add_header("Content-Type", "application/json")
+    # 20s reichen fuer Cleanup; danach faellt _cleanup_text auf Ollama/Roh-Text
+    # zurueck, statt die naechste Aufnahme lange zu blockieren.
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {_http_error_body(e)}")
+    choices = result.get("choices") or []
+    if not choices:
+        return text
+    cleaned = (choices[0].get("message", {}).get("content") or "").strip()
+    return cleaned if cleaned else text
+
+
+def verify_api_key(provider, api_key, timeout=12):
+    """Prueft den Key per GET /models. Gibt (ok: bool, msg: str) zurueck.
+    Fuer den 'Testen'-Button in den Settings."""
+    cfg = API_PROVIDERS.get(provider) or API_PROVIDERS["groq"]
+    if not (api_key or "").strip():
+        return False, "Kein API-Key eingetragen."
+    try:
+        req = urllib.request.Request(cfg["base"] + "/models", method="GET")
+        req.add_header("Authorization", f"Bearer {api_key.strip()}")
+        req.add_header("User-Agent", API_USER_AGENT)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            json.loads(resp.read().decode("utf-8"))
+        return True, "API-Key gueltig - Cloud-Spracherkennung ist bereit."
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, "API-Key ungueltig oder ohne Berechtigung (401/403)."
+        return False, f"Server-Fehler {e.code}: {_http_error_body(e)}"
+    except Exception as e:
+        return False, f"Verbindung fehlgeschlagen: {str(e)[:80]}"
+
+
+# =====================================================================
 #  Auto-Updater (nur Hinweis, KEIN Auto-Install). Reine Netz-Abfrage
 #  gegen die GitHub-Releases-API; Fehler werden geschluckt.
 # =====================================================================
@@ -334,6 +754,11 @@ def _parse_ver(s):
 
 
 def check_for_update(timeout=6):
+    """Gibt (tag, download_url) der neuesten passenden Release zurueck, wenn neuer
+    als __version__, sonst None. download_url zeigt DIREKT auf das .exe-Asset
+    (nicht auf die Release-Seite) — so muss der User auf der GitHub-Seite nicht
+    zwischen .exe und den zwei Source-Code-Links unterscheiden; ein Klick laedt
+    die richtige Datei. Fallback auf die Release-Seite, falls kein Asset da ist."""
     try:
         import json as _json
         url = f"https://api.github.com/repos/{UPDATE_REPO}/releases"
@@ -360,7 +785,13 @@ def check_for_update(timeout=6):
             return None
         v = _parse_ver(latest.get("tag_name", ""))
         if cur and v and v > cur:
-            return (latest.get("tag_name", ""), latest.get("html_url"))
+            # Direkter Download-Link auf das .exe-Asset; Fallback Release-Seite.
+            exe_url = None
+            for a in (latest.get("assets") or []):
+                if a.get("name", "").endswith(RELEASE_ASSET_SUFFIX):
+                    exe_url = a.get("browser_download_url")
+                    break
+            return (latest.get("tag_name", ""), exe_url or latest.get("html_url"))
         return None
     except Exception:
         return None
@@ -1116,6 +1547,19 @@ DEFAULT_CONFIG = {
         },
         "extra_prompt": "",
     },
+    # --- Cloud-Spracherkennung (optional, opt-in) ---
+    # Wenn aktiviert UND ein passender Key hinterlegt ist, laeuft die
+    # Transkription ueber die Cloud-API (bessere Erkennung) statt lokal,
+    # und die KI-Textbereinigung wird auch ohne Ollama nutzbar.
+    "api_enabled": False,
+    "api_provider": "groq",          # "groq" | "openai"
+    "api_key_groq": "",
+    "api_key_openai": "",
+    # --- Woerterbuch-Auto-Lernen ---
+    # Erkennt, wenn der User direkt nach dem Einfuegen ein einzelnes Wort im
+    # Zielfeld korrigiert, und lernt die Korrektur ins Woerterbuch. Liest
+    # das Zielfeld ueber Windows UI Automation (kein TCC noetig).
+    "dict_autolearn": True,
 }
 
 
@@ -2095,21 +2539,75 @@ class OllamaManager(QObject):
                 self._busy = False
 
 
-# --- Tray-Icon-Helfer (Qt-Painter statt PIL) ---
+# --- Tray-Icon-Helfer (App-Icon + State-Indicator-Dot) ---
+
+# Cache: das echte App-Icon einmal als QPixmap-Master in 256 vorhalten und
+# dann je Tray-Aufruf auf 64 skalieren. Spart das Disk-Read + Decode pro
+# Tray-State-Wechsel.
+_APP_ICON_PIXMAP_CACHE = None
+
+
+def _app_icon_pixmap(size=64):
+    """Liefert das App-Icon (icon.ico) als QPixmap. Faellt auf einen lila
+    Kreis zurueck, falls die Datei nicht existiert (dev-mode ohne Asset)."""
+    global _APP_ICON_PIXMAP_CACHE
+    if _APP_ICON_PIXMAP_CACHE is None:
+        try:
+            if os.path.exists(APP_ICON_PATH):
+                ic = QIcon(APP_ICON_PATH)
+                # 256 = groesste Aufloesung in der ICO-Pyramide; saubere
+                # Downscales fuer 16/24/32/48/64 via Qt.
+                _APP_ICON_PIXMAP_CACHE = ic.pixmap(256, 256)
+            else:
+                # Fallback: lila Kreis (App-Akzent), damit Tray nicht leer ist.
+                fb = QPixmap(256, 256)
+                fb.fill(Qt.transparent)
+                pp = QPainter(fb)
+                pp.setRenderHint(QPainter.Antialiasing)
+                pp.setBrush(QColor("#7C3AED"))
+                pp.setPen(Qt.NoPen)
+                pp.drawRoundedRect(0, 0, 256, 256, 56, 56)
+                pp.end()
+                _APP_ICON_PIXMAP_CACHE = fb
+        except Exception:
+            _APP_ICON_PIXMAP_CACHE = QPixmap(256, 256)
+            _APP_ICON_PIXMAP_CACHE.fill(Qt.transparent)
+    return _APP_ICON_PIXMAP_CACHE.scaled(
+        size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+    )
+
 
 def _make_icon_pixmap(state):
-    pm = QPixmap(64, 64)
+    """Tray-Icon je nach State. Statt eines anonymen grauen Kreises:
+    immer das echte App-Icon (lila Mikro). Bei rec/busy zusaetzlich einen
+    kleinen farbigen Indicator-Dot rechts unten, damit der Status auf
+    einen Blick erkennbar bleibt."""
+    base = _app_icon_pixmap(64)
+    if state == "ready":
+        return base
+    pm = QPixmap(base.size())
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
+    p.drawPixmap(0, 0, base)
+    # Indicator: 28% des Tray-Icons, rechts unten.
+    s = pm.width()
+    dot = int(s * 0.42)
+    margin = max(1, int(s * 0.04))
+    x = s - dot - margin
+    y = s - dot - margin
+    # Weisser Rand fuer Kontrast (sitzt der Dot teils auf hellem, teils
+    # auf dunklem Lila — der Ring trennt ihn sauber ab).
+    ring = max(2, int(s * 0.06))
+    p.setBrush(QColor(255, 255, 255, 230))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(x - ring, y - ring, dot + 2 * ring, dot + 2 * ring)
     color = {
-        "ready": QColor(80, 80, 80),
-        "rec":   QColor(220, 40, 40),
-        "busy":  QColor(230, 140, 30),
-    }.get(state, QColor(80, 80, 80))
+        "rec":  QColor(220, 40, 40),    # rot = Aufnahme laeuft
+        "busy": QColor(230, 140, 30),   # orange = transkribiert
+    }.get(state, QColor(220, 40, 40))
     p.setBrush(color)
-    p.setPen(QColor(0, 0, 0))
-    p.drawEllipse(6, 6, 52, 52)
+    p.drawEllipse(x, y, dot, dot)
     p.end()
     return pm
 
@@ -3206,28 +3704,35 @@ class StyleView(QWidget):
 
     def refresh_lock(self):
         """Page 0 vs Page 1 umschalten. Voraussetzung für die Style-Auswahl
-        sind ZWEI Bedingungen: Ollama läuft UND der User hat die KI-
-        Bereinigung aktiviert. Sonst hat das Ändern des Stils keinen
-        Effekt — dann lieber transparent sperren."""
-        state = self.app.ollama_mgr.state()
-        ready = (state == OLLAMA_READY)
+        sind ZWEI Bedingungen: Textbereinigung ist verfuegbar (Cloud-API
+        ODER Ollama) UND der User hat sie aktiviert. Sonst hat das Ändern
+        des Stils keinen Effekt — dann lieber transparent sperren."""
+        ready = self.app.cleanup_available()
         cleanup_on = bool(self.app.cleanup_enabled)
         unlocked = ready and cleanup_on
-        if state == OLLAMA_NOT_INSTALLED:
-            self._lock_text.setText(
-                "Ollama ist nicht installiert. Gehe zu Einstellungen → "
-                "KI-Textbereinigung, um es zu installieren."
-            )
-        elif state == OLLAMA_PAUSED:
-            self._lock_text.setText(
-                "Ollama ist für IQspeakr deaktiviert. Aktiviere die Option "
-                "in den Einstellungen, um den Schreibstil zu wählen."
-            )
-        elif not ready:
-            self._lock_text.setText(
-                "Ollama ist nicht aktiv. Aktiviere die KI-Textbereinigung "
-                "in den Einstellungen."
-            )
+        if not ready:
+            # Differenzierte Texte je nach Ollama-State (Hauptursache fuer
+            # "nicht bereit" auf Windows), API als Alternative immer erwaehnen.
+            state = self.app.ollama_mgr.state()
+            if state == OLLAMA_NOT_INSTALLED:
+                self._lock_text.setText(
+                    "Textbereinigung ist nicht aktiv. Hinterlege einen "
+                    "API-Key (Einstellungen → Cloud-Spracherkennung) oder "
+                    "installiere Ollama — dann schaltet sich der Schreibstil "
+                    "automatisch frei."
+                )
+            elif state == OLLAMA_PAUSED:
+                self._lock_text.setText(
+                    "Textbereinigung ist nicht aktiv. Aktiviere Ollama in "
+                    "den Einstellungen — oder hinterlege einen API-Key, "
+                    "dann läuft das Cleanup über die Cloud."
+                )
+            else:
+                self._lock_text.setText(
+                    "Textbereinigung ist nicht aktiv. Hinterlege einen "
+                    "API-Key oder starte Ollama — dann schaltet sich der "
+                    "Schreibstil automatisch frei."
+                )
         else:
             self._lock_text.setText(
                 "KI-Textbereinigung ist ausgeschaltet. Aktiviere die Checkbox "
@@ -3613,6 +4118,10 @@ class SettingsView(QWidget):
     # Update-Check läuft in einem Daemon-Thread; das Ergebnis (None oder
     # (tag, url)) wird über dieses Signal zurück in den Main-Thread gehoben.
     update_check_result = Signal(object)
+    # API-Key-Test laeuft im Worker-Thread -> (ok, message) zurueck in Main.
+    _api_test_sig = Signal(bool, str)
+    # Diagnose-Versand laeuft im Worker-Thread -> (ok, message) zurueck in Main.
+    _diag_sent_sig = Signal(bool, str)
 
     FORM_QSS = (
         # FormLayout-Labels weicher als der Default-Body-Text:
@@ -3719,6 +4228,18 @@ class SettingsView(QWidget):
         self._error_reporting_cb.setChecked(bool(self.app.config.get("error_reporting", True)))
         self._error_reporting_cb.toggled.connect(self._on_error_reporting_toggled)
         gl.addRow(self._form_label(""), self._error_reporting_cb)
+
+        self._autolearn_cb = QCheckBox(
+            "Korrekturen automatisch ins Wörterbuch lernen"
+        )
+        self._autolearn_cb.setToolTip(
+            "Wenn du direkt nach dem Einfügen ein einzelnes Wort korrigierst,\n"
+            "merkt sich IQspeakr die Schreibweise fürs nächste Mal.\n"
+            "Liest das Zielfeld über Windows UI Automation."
+        )
+        self._autolearn_cb.setChecked(bool(self.app.config.get("dict_autolearn", True)))
+        self._autolearn_cb.toggled.connect(self._on_autolearn_toggled)
+        gl.addRow(self._form_label(""), self._autolearn_cb)
 
         v.addWidget(general)
 
@@ -3922,8 +4443,11 @@ class SettingsView(QWidget):
         self._update_check_btn = QPushButton("Auf Updates pruefen")
         self._update_check_btn.clicked.connect(self._on_check_update_clicked)
         upd_row.addWidget(self._update_check_btn)
-        self._open_release_btn = QPushButton("Release-Seite oeffnen")
+        self._open_release_btn = QPushButton("Update herunterladen (.exe)")
         self._open_release_btn.setProperty("role", "primary")
+        self._open_release_btn.setToolTip(
+            "Lädt direkt die Installations-Datei (IQspeakr-Setup-X.Y.Z.exe) herunter."
+        )
         self._open_release_btn.setVisible(False)
         self._open_release_btn.clicked.connect(self._on_open_release_clicked)
         upd_row.addWidget(self._open_release_btn)
@@ -3944,6 +4468,12 @@ class SettingsView(QWidget):
         pre = getattr(self.app, "update_available", None)
         if pre:
             self._on_update_check_result(pre)
+
+        # --- Cloud-Spracherkennung (API) ---
+        self._build_api_box(v)
+
+        # --- Diagnose & Support ---
+        self._build_diagnostics_box(v)
 
         v.addStretch(1)
 
@@ -4302,6 +4832,293 @@ class SettingsView(QWidget):
         except Exception:
             pass
 
+    # ===== Auto-Lernen-Toggle =====
+
+    def _on_autolearn_toggled(self, on):
+        self.app.config["dict_autolearn"] = bool(on)
+        save_config(self.app.config)
+
+    # ===== Cloud-Spracherkennung (API) =====
+
+    def _build_api_box(self, parent_layout):
+        box = QGroupBox("Cloud-Spracherkennung (API)")
+        bl = QVBoxLayout(box)
+        bl.setSpacing(14)
+        bl.setContentsMargins(0, 4, 0, 0)
+
+        intro = QLabel(
+            "Optional: Mit einem API-Key von <b>Groq</b> oder <b>OpenAI</b> "
+            "läuft die Erkennung in der Cloud — deutlich genauere Wort- und "
+            "Spracherkennung. Ist die API aktiv, wird auch die "
+            "<b>KI-Textbereinigung</b> ohne Ollama freigeschaltet."
+        )
+        intro.setWordWrap(True)
+        intro.setTextFormat(Qt.RichText)
+        intro.setStyleSheet(f"color: {THEME_TEXT_SECONDARY}; font-size: 13px;")
+        bl.addWidget(intro)
+
+        self._api_enabled_cb = QCheckBox("Cloud-Spracherkennung per API nutzen")
+        self._api_enabled_cb.setChecked(bool(self.app.config.get("api_enabled", False)))
+        self._api_enabled_cb.toggled.connect(self._on_api_enabled_toggled)
+        bl.addWidget(self._api_enabled_cb)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(20)
+        form.setVerticalSpacing(12)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+
+        self._api_provider_combo = QComboBox()
+        for key in ("groq", "openai"):
+            self._api_provider_combo.addItem(API_PROVIDERS[key]["label"], key)
+        cur_p = self.app.config.get("api_provider", "groq")
+        for i in range(self._api_provider_combo.count()):
+            if self._api_provider_combo.itemData(i) == cur_p:
+                self._api_provider_combo.setCurrentIndex(i)
+                break
+        self._api_provider_combo.currentIndexChanged.connect(self._on_api_provider_changed)
+        form.addRow(self._form_label("Anbieter"), self._api_provider_combo)
+
+        self._api_key_edit = QLineEdit()
+        self._api_key_edit.setEchoMode(QLineEdit.Password)
+        self._api_key_edit.setPlaceholderText("API-Key einfügen (wird lokal gespeichert)")
+        self._api_key_edit.setText(self._current_provider_key())
+        # Erst beim Verlassen des Felds speichern — nicht bei jedem Tastendruck.
+        self._api_key_edit.editingFinished.connect(self._on_api_key_changed)
+        form.addRow(self._form_label("API-Key"), self._api_key_edit)
+        bl.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        self._api_show_cb = QCheckBox("Key anzeigen")
+        self._api_show_cb.toggled.connect(self._on_api_show_toggled)
+        btn_row.addWidget(self._api_show_cb)
+        btn_row.addSpacing(12)
+        self._api_test_btn = QPushButton("Key testen")
+        self._api_test_btn.clicked.connect(self._on_api_test_clicked)
+        btn_row.addWidget(self._api_test_btn)
+        self._api_key_link = QPushButton("Key besorgen…")
+        self._api_key_link.clicked.connect(self._on_api_key_link_clicked)
+        btn_row.addWidget(self._api_key_link)
+        btn_row.addStretch(1)
+        bl.addLayout(btn_row)
+
+        self._api_status_lbl = QLabel("")
+        self._api_status_lbl.setWordWrap(True)
+        self._api_status_lbl.setStyleSheet(f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;")
+        bl.addWidget(self._api_status_lbl)
+
+        self._api_test_sig.connect(self._on_api_test_result)
+        parent_layout.addWidget(box)
+        self._refresh_api_ui()
+
+    def _current_provider_key(self):
+        prov = self._provider_in_ui()
+        return self.app.config.get(f"api_key_{prov}", "") or ""
+
+    def _provider_in_ui(self):
+        return self._api_provider_combo.currentData() or "groq"
+
+    def _refresh_api_ui(self):
+        enabled = self._api_enabled_cb.isChecked()
+        for w in (self._api_provider_combo, self._api_key_edit,
+                  self._api_show_cb, self._api_test_btn, self._api_key_link):
+            w.setEnabled(enabled)
+
+    def _on_api_enabled_toggled(self, on):
+        self.app.config["api_enabled"] = bool(on)
+        save_config(self.app.config)
+        self._refresh_api_ui()
+        # Cleanup-Verfuegbarkeit kann sich geaendert haben -> Menü + StyleView neu.
+        self.app.rebuild_menu_sig.emit()
+        try:
+            if self.app.main_window is not None:
+                sv = self.app.main_window.style_view
+                if sv is not None:
+                    sv.refresh_lock()
+        except Exception:
+            pass
+        if on and not self._current_provider_key().strip():
+            self._api_status_lbl.setText(
+                "Trage noch deinen API-Key ein, dann ist die Cloud-Erkennung aktiv."
+            )
+
+    def _on_api_provider_changed(self, _idx):
+        prov = self._provider_in_ui()
+        self.app.config["api_provider"] = prov
+        save_config(self.app.config)
+        # Key-Feld auf den Key des neu gewaehlten Providers umstellen.
+        self._api_key_edit.blockSignals(True)
+        self._api_key_edit.setText(self.app.config.get(f"api_key_{prov}", "") or "")
+        self._api_key_edit.blockSignals(False)
+        self._api_status_lbl.setText("")
+        self.app.rebuild_menu_sig.emit()
+
+    def _on_api_key_changed(self):
+        prov = self._provider_in_ui()
+        self.app.config[f"api_key_{prov}"] = self._api_key_edit.text().strip()
+        save_config(self.app.config)
+        self.app.rebuild_menu_sig.emit()
+        # Cleanup könnte jetzt verfügbar werden.
+        try:
+            if self.app.main_window is not None:
+                sv = self.app.main_window.style_view
+                if sv is not None:
+                    sv.refresh_lock()
+        except Exception:
+            pass
+
+    def _on_api_show_toggled(self, on):
+        self._api_key_edit.setEchoMode(
+            QLineEdit.Normal if on else QLineEdit.Password
+        )
+
+    def _on_api_key_link_clicked(self):
+        prov = self._provider_in_ui()
+        url = API_PROVIDERS.get(prov, {}).get("key_url")
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _on_api_test_clicked(self):
+        # Key erst sichern, dann testen.
+        self._on_api_key_changed()
+        prov = self._provider_in_ui()
+        key = self.app.config.get(f"api_key_{prov}", "")
+        self._api_test_btn.setEnabled(False)
+        self._api_status_lbl.setText("Teste API-Key…")
+
+        def _worker():
+            try:
+                ok, msg = verify_api_key(prov, key)
+            except Exception as e:
+                ok, msg = False, f"Fehler beim Test: {str(e)[:120]}"
+            self._api_test_sig.emit(ok, msg)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_api_test_result(self, ok, msg):
+        self._api_test_btn.setEnabled(self._api_enabled_cb.isChecked())
+        color = THEME_ACCENT_TEXT if ok else THEME_DANGER
+        self._api_status_lbl.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self._api_status_lbl.setText(msg)
+
+    # ===== Diagnose & Support (PIN-Versand) =====
+
+    def _build_diagnostics_box(self, parent_layout):
+        box = QGroupBox("Diagnose & Support")
+        bl = QVBoxLayout(box)
+        bl.setSpacing(14)
+        bl.setContentsMargins(0, 4, 0, 0)
+
+        info = QLabel(
+            "Wenn etwas nicht funktioniert, kannst du hier einen "
+            "<b>Diagnose-Bericht</b> an den Entwickler senden: Logs, System-"
+            "Infos und deine Einstellungen — <b>ohne</b> diktierte Texte und "
+            "<b>ohne</b> API-Keys. Das hilft, Fehler schnell zu finden.<br><br>"
+            "Das Senden ist mit einer <b>PIN</b> geschützt (verhindert "
+            "versehentliches/mehrfaches Senden). Die PIN bekommst du direkt "
+            "von Gaetano — bitte nur senden, wenn er dich darum bittet."
+        )
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.RichText)
+        info.setStyleSheet(f"color: {THEME_TEXT_SECONDARY}; font-size: 13px;")
+        bl.addWidget(info)
+
+        # "Diagnose erstellen" — lokal anschauen, was gesendet würde.
+        create_row = QHBoxLayout()
+        self._diag_create_btn = QPushButton("Diagnose erstellen")
+        self._diag_create_btn.setToolTip(
+            "Schreibt den Bericht in ~/IQspeakr-Diagnose.txt und öffnet ihn — "
+            "so siehst du genau, was gesendet würde."
+        )
+        self._diag_create_btn.clicked.connect(self._on_diag_create_clicked)
+        create_row.addWidget(self._diag_create_btn)
+        create_row.addStretch(1)
+        bl.addLayout(create_row)
+
+        # PIN-Feld + "Bericht senden".
+        send_form = QFormLayout()
+        send_form.setHorizontalSpacing(20)
+        send_form.setVerticalSpacing(10)
+        send_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        send_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        self._diag_pin_edit = QLineEdit()
+        self._diag_pin_edit.setEchoMode(QLineEdit.Password)
+        self._diag_pin_edit.setPlaceholderText("PIN von Gaetano")
+        self._diag_pin_edit.setMaximumWidth(220)
+        send_form.addRow(self._form_label("PIN"), self._diag_pin_edit)
+        bl.addLayout(send_form)
+
+        send_row = QHBoxLayout()
+        self._diag_send_btn = QPushButton("Bericht senden")
+        self._diag_send_btn.setProperty("role", "primary")
+        self._diag_send_btn.clicked.connect(self._on_diag_send_clicked)
+        send_row.addWidget(self._diag_send_btn)
+        send_row.addStretch(1)
+        bl.addLayout(send_row)
+
+        self._diag_status_lbl = QLabel("")
+        self._diag_status_lbl.setWordWrap(True)
+        self._diag_status_lbl.setStyleSheet(
+            f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;"
+        )
+        bl.addWidget(self._diag_status_lbl)
+
+        self._diag_sent_sig.connect(self._on_diag_sent)
+        parent_layout.addWidget(box)
+
+    def _on_diag_create_clicked(self):
+        try:
+            summary, attachments = self.app.collect_diagnostic()
+            note = ("\n\n--- Anhänge, die mitgesendet würden ---\n"
+                    + "\n".join(f"- {n} ({len(d)} Bytes)"
+                                for n, d in attachments)
+                    + "\n\n(Diktierte Texte sind in den Logs als "
+                    "'[redigiert]' entfernt; API-Keys werden nie mitgesendet.)")
+            path = str(Path.home() / "IQspeakr-Diagnose.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(summary + note)
+            self._diag_status_lbl.setStyleSheet(
+                f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;"
+            )
+            self._diag_status_lbl.setText(
+                f"Diagnose erstellt: {path} (wird geöffnet)."
+            )
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as e:
+            self._diag_status_lbl.setStyleSheet(f"color: {THEME_DANGER}; font-size: 12px;")
+            self._diag_status_lbl.setText(f"Konnte Diagnose nicht erstellen: {str(e)[:120]}")
+
+    def _on_diag_send_clicked(self):
+        if not _check_diagnostic_pin(self._diag_pin_edit.text()):
+            self._diag_status_lbl.setStyleSheet(f"color: {THEME_DANGER}; font-size: 12px;")
+            self._diag_status_lbl.setText(
+                "Falsche PIN. Die PIN bekommst du direkt von Gaetano (Entwickler)."
+            )
+            return
+        self._diag_send_btn.setEnabled(False)
+        self._diag_status_lbl.setStyleSheet(
+            f"color: {THEME_TEXT_SECONDARY}; font-size: 12px;"
+        )
+        self._diag_status_lbl.setText("Erstelle Bericht und sende…")
+
+        def _worker():
+            try:
+                summary, attachments = self.app.collect_diagnostic()
+                ok, msg = send_diagnostic_to_sentry(summary, attachments)
+            except Exception as e:
+                ok, msg = False, f"Fehler: {str(e)[:120]}"
+            self._diag_sent_sig.emit(ok, msg)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_diag_sent(self, ok, msg):
+        self._diag_send_btn.setEnabled(True)
+        color = THEME_ACCENT_TEXT if ok else THEME_DANGER
+        self._diag_status_lbl.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self._diag_status_lbl.setText(msg)
+        if ok:
+            self._diag_pin_edit.clear()
+
 
 # =====================================================================
 #  Main-Window: Sidebar + QStackedWidget mit drei Views.
@@ -4594,6 +5411,9 @@ class IQspeakrApp(QObject):
     ollama_model_changed = Signal(str)
     # Warmup-Feedback: "" = fertig, sonst Statustext für SettingsView.
     warmup_status_sig = Signal(str)
+    # Wörterbuch-Auto-Lernen: aus dem Transkriptions-Thread wird über dieses
+    # Signal an den Main-Thread weitergereicht (UIA = COM, nicht thread-safe).
+    autolearn_sig = Signal(str)
 
     def __init__(self, qapp, splash=None):
         super().__init__()
@@ -4674,6 +5494,12 @@ class IQspeakrApp(QObject):
         self.notify_sig.connect(self._on_notify)
         self.status_sig.connect(self._on_status)
         self.overlay_recording_sig.connect(self.overlay.set_recording)
+
+        # Wörterbuch-Auto-Lernen: Snapshot des Zielfelds nach dem Paste +
+        # Token gegen Races (mehrere Aufnahmen kurz hintereinander).
+        self._autolearn_pending = None
+        self._autolearn_token = 0
+        self.autolearn_sig.connect(self._autolearn_begin)
 
         # Whisper-Modell laden (Thread)
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -4763,7 +5589,8 @@ class IQspeakrApp(QObject):
         # weiter funktioniert.
         was = self.ollama_available
         self.ollama_available = (state == OLLAMA_READY)
-        if state != OLLAMA_READY:
+        if state != OLLAMA_READY and not self._api_active():
+            # Cleanup nur deaktivieren wenn weder Ollama NOCH API verfügbar.
             self.cleanup_enabled = False
         elif not was:
             # Ollama frisch verfügbar -> Cleanup wieder aktivieren falls
@@ -5107,6 +5934,340 @@ class IQspeakrApp(QObject):
         self.tray.hide()
         self.qapp.quit()
 
+    # --- Cloud-API-Status (Single Source of Truth) ---
+
+    def _api_key(self):
+        """Aktiver Key passend zum gewaehlten Provider, getrimmt ('' wenn
+        keiner)."""
+        prov = self.config.get("api_provider", "groq")
+        return (self.config.get(f"api_key_{prov}") or "").strip()
+
+    def _api_active(self):
+        """True, wenn Cloud-API eingeschaltet UND ein Key hinterlegt ist."""
+        return bool(self.config.get("api_enabled") and self._api_key())
+
+    def cleanup_available(self):
+        """KI-Textbereinigung moeglich? Entweder via Cloud-API oder via
+        lokales Ollama. Single Source of Truth fuer StyleView-Freischaltung,
+        Tray-Toggle und Cleanup-Routing."""
+        return self._api_active() or self.ollama_mgr.is_ready()
+
+    # --- Diagnose-Bericht (Windows-Variante) ---
+
+    def collect_diagnostic(self):
+        """Baut den Diagnose-Bericht: (lesbarer Text, [(dateiname, bytes), ...]).
+        Enthaelt System-/Status-Infos + sanitisierte Einstellungen (OHNE
+        API-Keys) + redigierte Log-Ausschnitte (OHNE diktierten Text)."""
+        import platform
+        L = []
+        L.append("=== IQspeakr Diagnose ===")
+        L.append(f"Version:   {__version__}")
+        try:
+            L.append(f"Zeit:      {datetime.now().isoformat(timespec='seconds')}")
+        except Exception:
+            pass
+        try:
+            win = platform.win32_ver()
+            L.append(f"Windows:   {win[0]} {win[1]}   Arch: {platform.machine()}")
+        except Exception:
+            L.append(f"OS:        {platform.platform()}   Arch: {platform.machine()}")
+        L.append(f"Python:    {sys.version.split()[0]}")
+        try:
+            lr = bool(self._listener and self._listener.running)
+            la = bool(self._listener and self._listener.is_alive())
+        except Exception:
+            lr = la = "?"
+        L.append(f"Hotkey-Listener:  running={lr} alive={la}")
+        L.append(f"Modell geladen:   {self.model is not None}")
+        try:
+            L.append(f"Ollama-State:     {self.ollama_mgr.state()}")
+        except Exception:
+            pass
+        L.append(f"Cloud-API aktiv:  {self._api_active()} "
+                 f"(Provider {self.config.get('api_provider')})")
+        # Einstellungen — API-Keys NICHT im Klartext, nur gesetzt/leer.
+        safe = dict(self.config)
+        for k in list(safe):
+            if k.startswith("api_key"):
+                safe[k] = "gesetzt" if safe[k] else "leer"
+        L.append("")
+        L.append("Einstellungen:")
+        try:
+            L.append(json.dumps(safe, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+        summary = "\n".join(str(x) for x in L)
+
+        attachments = []
+        log_tail = _read_tail(
+            str(Path.home() / "IQspeakr.log"), 120_000, redact=True,
+        )
+        if log_tail:
+            attachments.append(
+                ("iqspeakr-log.txt", log_tail.encode("utf-8", "replace"))
+            )
+        crash_tail = _read_tail(
+            str(Path.home() / "IQspeakr.crash.log"), 40_000, redact=False,
+        )
+        if crash_tail.strip():
+            attachments.append(
+                ("iqspeakr-crash.txt", crash_tail.encode("utf-8", "replace"))
+            )
+        return summary, attachments
+
+    # --- Wörterbuch-Auto-Lernen (Windows: UI Automation) ---
+
+    _AUTOLEARN_POLL_INTERVAL = 1.2   # Sekunden zwischen zwei Lesungen
+    _AUTOLEARN_WINDOW = 30.0         # Gesamt-Beobachtungsfenster in Sekunden
+    # Erst auswerten, wenn das Feld so viele Polls in Folge UNVERAENDERT war —
+    # sonst greift der Filter mitten im Tippen (User loescht erst, tippt dann).
+    # 2 Polls * 1.2s ~ 2.4s Ruhe = "Korrektur fertig".
+    _AUTOLEARN_STABLE_POLLS = 2
+    _AUTOLEARN_STOPWORDS = {
+        "oder", "aber", "denn", "dann", "auch", "noch", "doch", "sehr",
+        "eine", "einen", "einem", "eines", "nicht", "sind", "haben", "wird",
+        "wurde", "diese", "dieser", "dieses", "schon", "mehr", "also", "wenn",
+        "dass", "weil", "über", "unter", "wieder", "immer", "etwas",
+        "that", "this", "with", "from", "have", "they", "their", "there",
+        "would", "could", "should", "about", "which", "been", "were",
+    }
+
+    def _uia_focused_value(self):
+        """(control, value_str) des aktuell fokussierten Textfelds oder
+        (None, None). Liest ueber Windows UI Automation. Schluckt alle
+        Fehler; falls die uiautomation-Lib nicht installiert ist oder das
+        Fokus-Control keinen lesbaren Wert hat, gibt es (None, None)."""
+        try:
+            import uiautomation as auto  # type: ignore
+        except Exception as e:
+            log.debug(f"UIA nicht verfuegbar: {e}")
+            return None, None
+        try:
+            # GetFocusedControl initialisiert COM intern (CoInitialize bei Bedarf).
+            ctrl = auto.GetFocusedControl()
+            if ctrl is None:
+                return None, None
+            value = None
+            # 1) ValuePattern (Edit/Textfeld mit String-Wert).
+            try:
+                vp = ctrl.GetPattern(auto.PatternId.ValuePattern)
+            except Exception:
+                vp = None
+            if vp is not None:
+                try:
+                    value = vp.Value
+                except Exception:
+                    value = None
+            # 2) Fallback: TextPattern (Rich-Text, contenteditable, Word, ...).
+            if not isinstance(value, str) or value is None:
+                try:
+                    tp = ctrl.GetPattern(auto.PatternId.TextPattern)
+                except Exception:
+                    tp = None
+                if tp is not None:
+                    try:
+                        rng = tp.DocumentRange
+                        # -1 = unbegrenzte Laenge
+                        value = rng.GetText(-1)
+                    except Exception:
+                        value = None
+            if not isinstance(value, str):
+                return ctrl, None
+            return ctrl, value
+        except Exception as e:
+            log.debug(f"UIA-Lesen fehlgeschlagen: {e}")
+            return None, None
+
+    def _arm_autolearn(self, inserted_text):
+        """Stösst das Auto-Lernen an. WIRD aus dem Transkriptions-Thread
+        aufgerufen — wir reichen die Arbeit per Signal an den Main-Thread
+        weiter. Begruendung: uiautomation = COM, nicht thread-sicher; und
+        das Mutieren des Woerterbuchs (QObject) gehoert in den Main-Thread.
+        Auf dem Main-Thread laeuft alles serialisiert — damit entfaellt
+        jede Race auf _autolearn_pending/_autolearn_token."""
+        if not self.config.get("dict_autolearn", True):
+            return
+        self.autolearn_sig.emit(inserted_text)
+
+    def _autolearn_begin(self, inserted_text):
+        """Main-Thread-Slot. Plant den Snapshot kurz nach dem Paste (Feld
+        muss den Text schon enthalten)."""
+        QTimer.singleShot(500, lambda: self._autolearn_start(inserted_text))
+
+    def _autolearn_start(self, inserted_text):
+        """Main-Thread. Liest den Ausgangszustand des Zielfelds und startet die
+        Beobachtungs-Schleife. Loggt klar, falls die App kein auslesbares Feld
+        bietet (haeufig bei manchen Electron-Apps) — damit man im IQspeakr.log
+        sieht, warum nichts gelernt wurde."""
+        element, v0 = self._uia_focused_value()
+        if element is None or v0 is None:
+            log.info(
+                "Auto-Lernen: Zielfeld nicht auslesbar (App gibt keinen "
+                "UIA-Wert frei, z.B. manche Electron-Apps) - uebersprungen."
+            )
+            return
+        self._autolearn_token += 1
+        token = self._autolearn_token
+        polls = max(1, int(self._AUTOLEARN_WINDOW / self._AUTOLEARN_POLL_INTERVAL))
+        self._autolearn_pending = {
+            "element": element, "v0": v0, "prev": v0,
+            "inserted": inserted_text, "token": token, "polls_left": polls,
+            "misses": 0, "stable": 0, "evaluated": v0,
+        }
+        log.info(
+            f"Auto-Lernen aktiv: beobachte Zielfeld ({len(v0)} Zeichen) "
+            f"~{int(self._AUTOLEARN_WINDOW)}s auf Ein-Wort-Korrektionen."
+        )
+        QTimer.singleShot(
+            int(self._AUTOLEARN_POLL_INTERVAL * 1000),
+            lambda: self._autolearn_poll(token),
+        )
+
+    def _autolearn_poll(self, token):
+        """Main-Thread. Liest das Zielfeld wiederholt. WICHTIG: Wir werten NICHT
+        bei jeder Änderung aus (sonst greift der Filter mitten im Tippen — z.B.
+        beim Löschen, bevor das neue Wort steht). Stattdessen warten wir, bis
+        das Feld ein paar Polls lang UNVERÄNDERT ist ('Korrektur fertig'), und
+        prüfen DANN den fertigen Stand gegen den Originaltext (v0). So wird aus
+        'Klod' -> ganzes Wort löschen -> 'Claude' korrekt das Endergebnis
+        gelernt, nicht ein Zwischenstand."""
+        pending = self._autolearn_pending
+        if not pending or pending.get("token") != token:
+            return  # neue Aufnahme hat diese Beobachtung abgeloest
+
+        cur = None
+        ctrl = pending["element"]
+        try:
+            import uiautomation as auto  # type: ignore
+            value = None
+            try:
+                vp = ctrl.GetPattern(auto.PatternId.ValuePattern)
+            except Exception:
+                vp = None
+            if vp is not None:
+                try:
+                    value = vp.Value
+                except Exception:
+                    value = None
+            if not isinstance(value, str):
+                try:
+                    tp = ctrl.GetPattern(auto.PatternId.TextPattern)
+                except Exception:
+                    tp = None
+                if tp is not None:
+                    try:
+                        value = tp.DocumentRange.GetText(-1)
+                    except Exception:
+                        value = None
+            if isinstance(value, str):
+                cur = value
+        except Exception:
+            cur = None
+
+        if cur is None:
+            # Feld kurz nicht lesbar (Fokuswechsel?) — ein paar Misses tolerieren.
+            pending["misses"] += 1
+            if pending["misses"] >= 3:
+                self._autolearn_pending = None
+                return
+        else:
+            pending["misses"] = 0
+            if cur != pending["prev"]:
+                # Es wird noch getippt/gelöscht -> Stabilitäts-Zähler zurück.
+                pending["prev"] = cur
+                pending["stable"] = 0
+            else:
+                # Feld unverändert seit letztem Poll.
+                pending["stable"] += 1
+                v0 = pending["v0"]
+                # Nur EINEN fertigen, neuen Ruhezustand auswerten (nicht v0
+                # selbst, nicht denselben Stand mehrfach).
+                if (pending["stable"] >= self._AUTOLEARN_STABLE_POLLS
+                        and cur != v0 and cur != pending["evaluated"]):
+                    pending["evaluated"] = cur
+                    pair = self._single_word_correction(
+                        pending["inserted"], v0, cur,
+                    )
+                    if pair:
+                        self._autolearn_pending = None
+                        self._autolearn_commit(*pair)
+                        return
+                    # Stand ist fertig, aber keine saubere Ein-Wort-Korrektur
+                    # (z.B. nur halb gelöscht) -> weiter beobachten.
+
+        pending["polls_left"] -= 1
+        if pending["polls_left"] <= 0:
+            self._autolearn_pending = None
+            log.debug("Auto-Lernen: Fenster abgelaufen, keine Korrektur erkannt.")
+            return
+        QTimer.singleShot(
+            int(self._AUTOLEARN_POLL_INTERVAL * 1000),
+            lambda: self._autolearn_poll(token),
+        )
+
+    def _autolearn_commit(self, old, new):
+        """Lernt die erkannte Korrektur ins Woerterbuch (Main-Thread)."""
+        try:
+            idx = self.dictionary.find_by_correct(new)
+            if idx >= 0:
+                learned = self.dictionary.merge_variants(idx, [old])
+            else:
+                learned = self.dictionary.add(new, [old])
+            if learned:
+                log.info(f"Auto-Lernen: '{old}' -> '{new}' ins Woerterbuch")
+                self._notify(
+                    "IQspeakr - Wörterbuch gelernt",
+                    f"'{old}' wird künftig als '{new}' geschrieben.",
+                )
+        except Exception as e:
+            log.debug(f"Auto-Lernen-Commit uebersprungen: {e}")
+
+    def _single_word_correction(self, inserted, before, after):
+        """Gibt (old, new) zurueck, wenn before->after GENAU eine Ein-Wort-
+        Ersetzung ist, deren altes Wort im eingefuegten Text vorkommt und
+        beide Woerter 'lernwuerdig' sind (lang, alphabetisch, kein Funktions-
+        wort). Sonst None. Bewusst streng, um Muell im Woerterbuch zu
+        vermeiden."""
+        import difflib
+        word_re = re.compile(r"[A-Za-zÄÖÜäöüßéèêàâ][A-Za-zÄÖÜäöüßéèêàâ\-]+")
+        toks_before = word_re.findall(before)
+        toks_after = word_re.findall(after)
+        if not toks_before or not toks_after:
+            return None
+        sm = difflib.SequenceMatcher(a=toks_before, b=toks_after)
+        replaces = [op for op in sm.get_opcodes() if op[0] != "equal"]
+        # genau EINE Aenderung, und die ist ein 1:1-Replace
+        if len(replaces) != 1:
+            return None
+        tag, i1, i2, j1, j2 = replaces[0]
+        if tag != "replace" or (i2 - i1) != 1 or (j2 - j1) != 1:
+            return None
+        old = toks_before[i1]
+        new = toks_after[j1]
+        if old.lower() == new.lower():
+            return None
+        if not self._is_learnable_word(old) or not self._is_learnable_word(new):
+            return None
+        # altes Wort muss aus UNSEREM eingefuegten Text stammen
+        if old.lower() not in (w.lower() for w in word_re.findall(inserted)):
+            return None
+        # Aehnlichkeit: vermeidet das Lernen voellig zusammenhangloser Swaps
+        ratio = difflib.SequenceMatcher(
+            a=old.lower(), b=new.lower(),
+        ).ratio()
+        if ratio < 0.34 and old[:1].lower() != new[:1].lower():
+            return None
+        return old, new
+
+    def _is_learnable_word(self, w):
+        # >=3 Zeichen, damit auch kurze Namen (z.B. "Max") lernbar sind;
+        # Funktionswoerter fangen die Stopword-Liste + Aehnlichkeits-Check ab.
+        if len(w) < 3:
+            return False
+        if w.lower() in self._AUTOLEARN_STOPWORDS:
+            return False
+        return True
+
     # --- Modell laden ---
 
     def _load_model(self):
@@ -5156,31 +6317,59 @@ class IQspeakrApp(QObject):
         )
 
     def _cleanup_text(self, text):
-        """Cleanup via Ollama, falls aktiviert + Service erreichbar.
+        """Cleanup via Cloud-API (wenn aktiv) oder lokales Ollama.
         Prompt wird aus dem aktuell gewählten Style gebaut.
 
-        Speed-Optimierungen:
+        Speed-Optimierungen (gelten fuer beide Pfade):
         - Bypass bei <=3 Wörtern ohne Satzzeichen (Mini-Aufnahmen wie "Ja",
           "Test", "Okay") - spart ~2-4s
+        Ollama-spezifisch:
         - keep_alive=30m: Modell bleibt im RAM zwischen Aufrufen
         - temperature=0 + top_k=1: Greedy-Decoding, deterministisch + schneller
         - num_predict ~2.5x Wortanzahl: Modell stoppt früher
         - num_thread=8: nutzt mehr CPU-Threads (default ist konservativ)
         """
-        if not self.cleanup_enabled or not self.ollama_mgr.is_ready():
+        if not self.cleanup_enabled:
+            return text
+        if not self.cleanup_available():
             return text
         word_count = max(1, len(text.split()))
         # Speed-Bypass für Mini-Aufnahmen.
         if word_count <= 3 and not any(c in text for c in ".,!?;:"):
             log.info(f"Cleanup-Bypass: {word_count} Wörter ohne Satzzeichen")
             return text
+        prompt_template = get_cleanup_prompt(self.config)
+        names = self.dictionary.correct_names()
+
+        # 1) Cloud-API bevorzugt, wenn aktiv.
+        if self._api_active():
+            try:
+                t0 = _time.time()
+                cleaned = cleanup_via_api(
+                    text, prompt_template,
+                    self.config.get("api_provider", "groq"),
+                    self._api_key(), names=names,
+                )
+                log.info(
+                    f"API-Cleanup: {(_time.time() - t0) * 1000:.0f}ms "
+                    f"({word_count} Wörter, {self.config.get('api_provider')})"
+                )
+                if cleaned:
+                    return cleaned
+            except Exception as e:
+                log.warning(f"API-Cleanup fehlgeschlagen: {e}")
+                sentry_note("API-Cleanup fehlgeschlagen", level="warning",
+                            provider=self.config.get("api_provider"))
+                # Weiter zu Ollama-Fallback (falls verfuegbar).
+
+        # 2) Lokales Ollama.
+        if not self.ollama_mgr.is_ready():
+            return text
         try:
-            prompt_template = get_cleanup_prompt(self.config)
             # Eigennamen aus dem Wörterbuch in den Prompt einbetten, damit
             # Ollama die nicht versehentlich umformatiert/transliteriert.
             # Wir hängen den Hinweis vor dem "Text:"-Block ein, so dass er
             # direkt vor dem zu bereinigenden Text steht.
-            names = self.dictionary.correct_names()
             if names:
                 keep_line = (
                     "WICHTIG: Behalte die folgenden Eigennamen exakt so wie "
@@ -5224,8 +6413,14 @@ class IQspeakrApp(QObject):
             return text
 
     def toggle_cleanup(self, _sender):
-        if not self.ollama_mgr.is_ready():
-            self._notify("IQspeakr", "Ollama läuft nicht. Installiere es im Hauptfenster -> Settings.")
+        # Cleanup darf an, sobald ENTWEDER die Cloud-API aktiv ist ODER Ollama
+        # laeuft. Ist beides aus, kurzer Hinweis.
+        if not self.cleanup_available():
+            self._notify(
+                "IQspeakr",
+                "Textbereinigung braucht entweder einen API-Key (Einstellungen) "
+                "oder ein laufendes Ollama.",
+            )
             return
         self.cleanup_enabled = not self.cleanup_enabled
         self.config["cleanup_enabled"] = self.cleanup_enabled
@@ -5422,49 +6617,120 @@ class IQspeakrApp(QObject):
 
     def _transcribe_frames(self, frames):
         # Lokale Referenz verhindert Race wenn self.model während Transkription
-        # auf None gesetzt wird (z.B. schneller Modell-Wechsel).
+        # auf None gesetzt wird (z.B. schneller Modell-Wechsel). Bei aktiver
+        # API ist self.model irrelevant — wir transkribieren via Cloud.
         model = self.model
-        if model is None:
+        api_active = self._api_active()
+        if model is None and not api_active:
             log.warning("_transcribe_frames: Modell nicht geladen — überspringe")
             self._set_icon_state("ready")
             self._refresh_menu()
             return
 
         audio_data = np.concatenate(frames, axis=0).flatten().astype(np.float32)
-        audio_dur_sec = len(audio_data) / float(SAMPLE_RATE)
+        duration_sec, rms, peak = audio_stats(audio_data, SAMPLE_RATE)
         log.info(
-            f"Transkribiere: {len(audio_data)} Samples ({audio_dur_sec:.2f}s), "
-            f"Peak: {np.max(np.abs(audio_data)):.4f}"
+            f"Transkribiere: {len(audio_data)} Samples, "
+            f"Dauer {duration_sec:.2f}s, RMS {rms:.4f}, Peak {peak:.4f}"
         )
+
+        # --- Phantom-Filter Stufe 1: zu kurz / zu leise -> gar nicht erst
+        # transkribieren. Verhindert "SWR 2020"-artige Halluzinationen an
+        # der Wurzel (Whisper erfindet Text aus Stille).
+        if is_probably_silence(audio_data, SAMPLE_RATE):
+            log.info(
+                f"Aufnahme verworfen (Stille/zu kurz: {duration_sec:.2f}s, "
+                f"RMS {rms:.4f}). Keine Transkription."
+            )
+            self._set_icon_state("ready")
+            self._refresh_menu()
+            return
 
         try:
             lang = self.config.get("language")
             if lang == "auto":
                 lang = None  # faster-whisper: None = automatische Erkennung
-            log.info(f"Starte Whisper-Transkription (Sprache: {lang})...")
-            try:
-                t_whisper_start = _time.time()
-                segments, info = model.transcribe(
-                    audio_data,
-                    language=lang,
-                    beam_size=1,           # statt 5: ~halb so lange, minimal weniger Qualität
-                    vad_filter=True,       # überspringt Stille-Segmente
-                    vad_parameters=dict(min_silence_duration_ms=300),
-                    # Kein Cross-Chunk-Kontext: marginal schneller und bei
-                    # typisch kurzen Dictate-Samples eh nicht relevant.
-                    condition_on_previous_text=False,
-                )
-                raw_text = "".join(seg.text for seg in segments).strip()
-                whisper_ms = (_time.time() - t_whisper_start) * 1000
+            raw_text = ""
+            used_api = False
+
+            # --- Cloud-API bevorzugt, wenn aktiv (bessere Erkennung) ---
+            if api_active:
+                provider = self.config.get("api_provider", "groq")
+                log.info(f"Starte Cloud-Transkription via {provider}...")
+                try:
+                    t0 = _time.time()
+                    raw_text = transcribe_via_api(
+                        audio_data, SAMPLE_RATE, provider,
+                        self._api_key(), lang,
+                    )
+                    used_api = True
+                    log.info(
+                        f"API ({provider}): {(_time.time() - t0) * 1000:.0f}ms "
+                        f"-> '{raw_text}'"
+                    )
+                except Exception as e:
+                    reason = str(e)[:160]
+                    log.warning(f"API-Transkription fehlgeschlagen ({provider}), "
+                                f"Fallback auf lokales Whisper: {reason}")
+                    sentry_note("API-Transkription fehlgeschlagen",
+                                level="warning", provider=provider,
+                                reason=reason)
+                    # Den echten Grund EINMAL pro Session sichtbar machen, damit
+                    # der User nicht raetselt, warum die Cloud-Erkennung "nichts
+                    # tut" (sie faellt still auf lokal zurueck).
+                    if not getattr(self, "_api_error_notified", False):
+                        self._api_error_notified = True
+                        self._notify(
+                            f"IQspeakr - {provider}-API Problem",
+                            f"Cloud-Erkennung fehlgeschlagen, nutze lokales "
+                            f"Whisper. Grund: {reason}",
+                            level="error",
+                        )
+
+            # --- Lokales Whisper (Default oder API-Fallback) ---
+            if not used_api:
+                if model is None:
+                    log.warning("API-Fallback verlangt lokales Modell, ist aber nicht geladen.")
+                    self._notify("IQspeakr - Fehler",
+                                 "Modell wird noch geladen — bitte gleich erneut versuchen.",
+                                 level="error")
+                    return
+                log.info(f"Starte Whisper-Transkription (Sprache: {lang})...")
+                try:
+                    t_whisper_start = _time.time()
+                    segments, info = model.transcribe(
+                        audio_data,
+                        language=lang,
+                        beam_size=1,           # statt 5: ~halb so lange, minimal weniger Qualität
+                        vad_filter=True,       # überspringt Stille-Segmente
+                        vad_parameters=dict(min_silence_duration_ms=300),
+                        # Kein Cross-Chunk-Kontext: marginal schneller und bei
+                        # typisch kurzen Dictate-Samples eh nicht relevant.
+                        condition_on_previous_text=False,
+                    )
+                    raw_text = "".join(seg.text for seg in segments).strip()
+                    whisper_ms = (_time.time() - t_whisper_start) * 1000
+                    log.info(
+                        f"Whisper: {whisper_ms:.0f}ms ({whisper_ms / max(duration_sec, 0.01):.1f}x "
+                        f"Realtime, Modell {self.config.get('whisper_model')}) "
+                        f"-> '{raw_text}'"
+                    )
+                except Exception as e:
+                    log.error(f"Whisper-Fehler: {e}")
+                    self._notify("IQspeakr - Fehler", str(e)[:100], level="error")
+                    return
+
+            # --- Phantom-Filter Stufe 2b: bekannte Halluzinations-Phrasen
+            # bei kurzem Audio verwerfen (greift fuer API + lokal).
+            if raw_text and looks_like_hallucination(raw_text, duration_sec):
                 log.info(
-                    f"Whisper: {whisper_ms:.0f}ms ({whisper_ms / max(audio_dur_sec, 0.01):.1f}x "
-                    f"Realtime, Modell {self.config.get('whisper_model')}) "
-                    f"-> '{raw_text}'"
+                    f"Phantom-Text verworfen ('{raw_text}', "
+                    f"Dauer {duration_sec:.2f}s)."
                 )
-            except Exception as e:
-                log.error(f"Whisper-Fehler: {e}")
-                self._notify("IQspeakr - Fehler", str(e)[:100], level="error")
-                return
+                sentry_note("Phantom-Text gefiltert", level="info",
+                            duration=round(duration_sec, 2),
+                            via=("api" if used_api else "whisper"))
+                raw_text = ""
 
             if raw_text:
                 # Eigennamen-Korrektur vor Cleanup: ersetzt bekannte
@@ -5478,6 +6744,9 @@ class IQspeakrApp(QObject):
                 pyperclip.copy(text)
                 log.info("Text in Zwischenablage kopiert")
                 self._paste_via_kb(text)
+                # Wörterbuch-Auto-Lernen: Schnappschuss des Zielfelds nehmen,
+                # um spaeter eine manuelle Ein-Wort-Korrektur zu erkennen.
+                self._arm_autolearn(text)
                 # History persistiert immer den Endtext (cleaned wenn aktiv,
                 # sonst raw). add() emittet changed -> HomeView frischt sich
                 # selbst auf.
@@ -5487,7 +6756,6 @@ class IQspeakrApp(QObject):
                     log.warning(f"HistoryStore.add fehlgeschlagen: {e}")
                 # Stats für Dashboard: Wortanzahl + Aufnahmedauer.
                 try:
-                    duration_sec = len(audio_data) / float(SAMPLE_RATE)
                     self.stats.record(
                         int(_time.time()),
                         len(text.split()),
