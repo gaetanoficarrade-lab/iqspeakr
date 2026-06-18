@@ -76,7 +76,7 @@ if not getattr(sys, "frozen", False) and sys.stderr is not None:
 #  oder Umgebungsvariable IQSPEAKR_NO_TELEMETRY=1. Ohne gesetzte DSN
 #  (Build-Zeit-Konstante / Env) passiert ohnehin nichts.
 # =====================================================================
-__version__ = "2026.6.2"
+__version__ = "2026.6.3"
 
 # Auto-Updater: nur Hinweis + Release-Seite oeffnen (KEIN Auto-Install).
 # mac und win teilen sich EIN GitHub-Repo; jede Linie filtert nach ihrem
@@ -6796,6 +6796,10 @@ class IQspeakrApp(QObject):
     # gar nichts gesehen).
     _AUTOLEARN_POLL_INTERVAL = 1.2   # Sekunden zwischen zwei Lesungen
     _AUTOLEARN_WINDOW = 30.0         # Gesamt-Beobachtungsfenster in Sekunden
+    # Erst auswerten, wenn das Feld so viele Polls in Folge UNVERAENDERT war —
+    # sonst greift der Filter mitten im Tippen (User loescht erst, tippt dann).
+    # 2 Polls * 1.2s ~ 2.4s Ruhe = "Korrektur fertig".
+    _AUTOLEARN_STABLE_POLLS = 2
     _AUTOLEARN_STOPWORDS = {
         "oder", "aber", "denn", "dann", "auch", "noch", "doch", "sehr",
         "eine", "einen", "einem", "eines", "nicht", "sind", "haben", "wird",
@@ -6869,7 +6873,7 @@ class IQspeakrApp(QObject):
         self._autolearn_pending = {
             "element": element, "v0": v0, "prev": v0,
             "inserted": inserted_text, "token": token, "polls_left": polls,
-            "misses": 0,
+            "misses": 0, "stable": 0, "evaluated": v0,
         }
         log.info(
             f"Auto-Lernen aktiv: beobachte Zielfeld ({len(v0)} Zeichen) "
@@ -6881,10 +6885,13 @@ class IQspeakrApp(QObject):
         )
 
     def _autolearn_poll(self, token):
-        """Main-Thread. Liest das Zielfeld erneut und vergleicht es mit dem
-        Ausgangszustand (v0) UND dem letzten Stand (prev). Findet sich eine
-        Ein-Wort-Korrektur -> lernen + stoppen. Sonst weiter beobachten, bis
-        das Fenster ablaeuft."""
+        """Main-Thread. Liest das Zielfeld wiederholt. WICHTIG: Wir werten NICHT
+        bei jeder Änderung aus (sonst greift der Filter mitten im Tippen — z.B.
+        beim Löschen, bevor das neue Wort steht). Stattdessen warten wir, bis
+        das Feld ein paar Polls lang UNVERÄNDERT ist ('Korrektur fertig'), und
+        prüfen DANN den fertigen Stand gegen den Originaltext (v0). So wird aus
+        'Klod' -> ganzes Wort löschen -> 'Claude' korrekt das Endergebnis
+        gelernt, nicht ein Zwischenstand."""
         pending = self._autolearn_pending
         if not pending or pending.get("token") != token:
             return  # neue Aufnahme hat diese Beobachtung abgeloest
@@ -6903,21 +6910,29 @@ class IQspeakrApp(QObject):
                 self._autolearn_pending = None
                 return
         else:
-            inserted = pending["inserted"]
-            v0 = pending["v0"]
-            prev = pending["prev"]
-            # Korrektur ggü. Ausgangstext ODER ggü. letztem Stand erkennen.
-            pair = None
-            if cur != v0:
-                pair = self._single_word_correction(inserted, v0, cur)
-            if not pair and cur != prev:
-                pair = self._single_word_correction(inserted, prev, cur)
-            if pair:
-                self._autolearn_pending = None
-                self._autolearn_commit(*pair)
-                return
-            pending["prev"] = cur
             pending["misses"] = 0
+            if cur != pending["prev"]:
+                # Es wird noch getippt/gelöscht -> Stabilitäts-Zähler zurück.
+                pending["prev"] = cur
+                pending["stable"] = 0
+            else:
+                # Feld unverändert seit letztem Poll.
+                pending["stable"] += 1
+                v0 = pending["v0"]
+                # Nur EINEN fertigen, neuen Ruhezustand auswerten (nicht v0
+                # selbst, nicht denselben Stand mehrfach).
+                if (pending["stable"] >= self._AUTOLEARN_STABLE_POLLS
+                        and cur != v0 and cur != pending["evaluated"]):
+                    pending["evaluated"] = cur
+                    pair = self._single_word_correction(
+                        pending["inserted"], v0, cur,
+                    )
+                    if pair:
+                        self._autolearn_pending = None
+                        self._autolearn_commit(*pair)
+                        return
+                    # Stand ist fertig, aber keine saubere Ein-Wort-Korrektur
+                    # (z.B. nur halb gelöscht) -> weiter beobachten.
 
         pending["polls_left"] -= 1
         if pending["polls_left"] <= 0:
