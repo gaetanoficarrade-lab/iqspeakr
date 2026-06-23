@@ -7060,7 +7060,7 @@ class IQspeakrApp(QObject):
                     f"Phantom-Text verworfen ('{raw_text}', "
                     f"Dauer {duration_sec:.2f}s)."
                 )
-                sentry_note("Phantom-Text gefiltert", level="info",
+                sentry_note("Phantom-Text gefiltert", level="debug",
                             duration=round(duration_sec, 2),
                             via=("api" if used_api else "whisper"))
                 raw_text = ""
