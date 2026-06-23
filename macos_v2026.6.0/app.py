@@ -76,7 +76,7 @@ if not getattr(sys, "frozen", False) and sys.stderr is not None:
 #  oder Umgebungsvariable IQSPEAKR_NO_TELEMETRY=1. Ohne gesetzte DSN
 #  (Build-Zeit-Konstante / Env) passiert ohnehin nichts.
 # =====================================================================
-__version__ = "2026.6.5"
+__version__ = "2026.6.7"
 
 # Auto-Updater: nur Hinweis + Release-Seite oeffnen (KEIN Auto-Install).
 # mac und win teilen sich EIN GitHub-Repo; jede Linie filtert nach ihrem

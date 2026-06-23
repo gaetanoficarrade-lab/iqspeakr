@@ -265,7 +265,7 @@ APP_ICON_PATH = os.path.join(APP_DIR, "icon.ico")
 #  Helfern (check_for_update, _init_sentry) definiert sein, weil diese
 #  __version__ / UPDATE_REPO / RELEASE_ASSET_SUFFIX referenzieren.
 # =====================================================================
-__version__ = "2026.6.6"
+__version__ = "2026.6.7"
 UPDATE_REPO = "gaetanoficarrade-lab/iqspeakr"
 RELEASE_ASSET_SUFFIX = ".exe"
 
