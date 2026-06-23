@@ -76,7 +76,7 @@ if not getattr(sys, "frozen", False) and sys.stderr is not None:
 #  oder Umgebungsvariable IQSPEAKR_NO_TELEMETRY=1. Ohne gesetzte DSN
 #  (Build-Zeit-Konstante / Env) passiert ohnehin nichts.
 # =====================================================================
-__version__ = "2026.6.7"
+__version__ = "2026.6.8"
 
 # Auto-Updater: nur Hinweis + Release-Seite oeffnen (KEIN Auto-Install).
 # mac und win teilen sich EIN GitHub-Repo; jede Linie filtert nach ihrem
@@ -7329,6 +7329,24 @@ class IQspeakrApp(QObject):
             log.info(
                 "Auto-Lernen: Zielfeld nicht auslesbar (AX blockiert, "
                 "z.B. WhatsApp/Electron) - verwende Tastatur-Hook-Fallback."
+            )
+            self._autolearn_keyhook_start(inserted_text)
+            return
+        # Sanity-Check: manche Apps geben statt des Eingabefelds das
+        # uebergeordnete Konversations-Panel zurueck - mit dem GESAMTEN
+        # sichtbaren Chat-Verlauf als Wert (hunderttausende Zeichen).
+        # Polling-Diff laesst sich da nicht zuverlaessig auf eine Ein-Wort-
+        # Korrektur reduzieren, weil "Senden" den Verlauf umstrukturiert.
+        # Faustregel: wenn v0 deutlich groesser ist als der eingefuegte Text
+        # (klar mehr als ein Absatz), ist's ein Container -> Hook-Fallback.
+        # Normale Eingabefelder (Discord, Slack, Notepad, Word, Editor) und
+        # auch mittelgrosse Dokumente bleiben unberuehrt.
+        if len(v0) > 10000 and len(v0) > len(inserted_text) * 50:
+            log.info(
+                f"Auto-Lernen: Zielfeld zu gross ({len(v0)} Zeichen, "
+                f"eingefuegt nur {len(inserted_text)}) - sieht nach "
+                "Konversations-Container aus (WhatsApp/Electron). "
+                "Verwende Tastatur-Hook-Fallback."
             )
             self._autolearn_keyhook_start(inserted_text)
             return

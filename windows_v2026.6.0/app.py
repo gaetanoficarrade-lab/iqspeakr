@@ -265,7 +265,7 @@ APP_ICON_PATH = os.path.join(APP_DIR, "icon.ico")
 #  Helfern (check_for_update, _init_sentry) definiert sein, weil diese
 #  __version__ / UPDATE_REPO / RELEASE_ASSET_SUFFIX referenzieren.
 # =====================================================================
-__version__ = "2026.6.7"
+__version__ = "2026.6.8"
 UPDATE_REPO = "gaetanoficarrade-lab/iqspeakr"
 RELEASE_ASSET_SUFFIX = ".exe"
 
@@ -6229,6 +6229,24 @@ class IQspeakrApp(QObject):
             log.info(
                 "Auto-Lernen: Zielfeld nicht auslesbar (UIA blockiert, "
                 "z.B. WhatsApp/Electron) - verwende Tastatur-Hook-Fallback."
+            )
+            self._autolearn_keyhook_start(inserted_text)
+            return
+        # Sanity-Check: WhatsApp Desktop (und manche Electron-Apps) geben statt
+        # des Eingabefelds das uebergeordnete Konversations-Panel zurueck - mit
+        # dem GESAMTEN sichtbaren Chat-Verlauf als Wert (hunderttausende
+        # Zeichen). Polling-Diff laesst sich da nicht zuverlaessig auf eine
+        # Ein-Wort-Korrektur reduzieren, weil "Senden" den Verlauf umstruk-
+        # turiert. Faustregel: wenn v0 deutlich groesser ist als der eingefuegte
+        # Text (klar mehr als ein Absatz), ist's ein Container -> Hook-Fallback.
+        # Normale Eingabefelder (Discord, Slack, Notepad, Word, Editor) und auch
+        # mittelgrosse Dokumente bleiben unberuehrt.
+        if len(v0) > 10000 and len(v0) > len(inserted_text) * 50:
+            log.info(
+                f"Auto-Lernen: Zielfeld zu gross ({len(v0)} Zeichen, "
+                f"eingefuegt nur {len(inserted_text)}) - sieht nach "
+                "Konversations-Container aus (WhatsApp/Electron). "
+                "Verwende Tastatur-Hook-Fallback."
             )
             self._autolearn_keyhook_start(inserted_text)
             return
