@@ -2996,6 +2996,16 @@ class HomeView(QWidget):
         layout.setContentsMargins(36, 32, 36, 28)
         layout.setSpacing(6)
 
+        # Update-Banner ganz oben. Sichtbar nur wenn ein Update vorliegt;
+        # klickbar = oeffnet den Direkt-Download. Verschwindet automatisch,
+        # sobald die neue Version installiert ist (Worker emittiert dann
+        # update_available_changed mit None, oder beim naechsten Start
+        # liefert check_for_update() schlicht None).
+        self._update_url = None
+        self._update_banner = self._build_update_banner()
+        self._update_banner.hide()
+        layout.addWidget(self._update_banner)
+
         title = QLabel("History")
         title.setProperty("role", "h1")
         layout.addWidget(title)
@@ -3004,6 +3014,15 @@ class HomeView(QWidget):
         sub.setProperty("role", "sub")
         layout.addWidget(sub)
         layout.addSpacing(18)
+
+        # Falls der Hintergrund-Check beim Start schon was gefunden hat
+        # (klassischer Race: Worker-Thread war schneller als die View),
+        # Banner direkt einblenden.
+        pre = getattr(self.app, "update_available", None)
+        if pre:
+            self._show_update_banner(pre)
+        # Live-Sync, sobald der Worker fertig wird.
+        self.app.update_available_changed.connect(self._show_update_banner)
 
         # Card-Container für die Liste der Einträge - wird gefüllt
         # von refresh().
@@ -3064,6 +3083,64 @@ class HomeView(QWidget):
                 card.set_last(True)
             self._card_layout.addWidget(card)
         self._card_layout.addStretch(1)
+
+    # --- Update-Banner (Variante A: sichtbar auf der Startseite) ---
+
+    def _build_update_banner(self):
+        """Klickbarer Banner oben auf Home. Klick = Direkt-Download. Wird
+        sichtbar gemacht via _show_update_banner; Schliessen passiert
+        automatisch, sobald kein Update mehr ansteht (neue Version
+        installiert -> Worker emittiert None oder der naechste Start
+        findet schlicht nichts)."""
+        banner = QFrame()
+        banner.setObjectName("UpdateBanner")
+        banner.setCursor(Qt.PointingHandCursor)
+        banner.setStyleSheet(
+            f"#UpdateBanner {{"
+            f" background: {THEME_ACCENT};"
+            f" border: 1px solid {THEME_ACCENT};"
+            f" border-radius: 10px;"
+            f"}}"
+            f"#UpdateBanner:hover {{ background: {THEME_ACCENT_HOVER}; }}"
+        )
+        h = QHBoxLayout(banner)
+        h.setContentsMargins(16, 12, 16, 12)
+        h.setSpacing(12)
+        self._update_banner_lbl = QLabel("Update verfügbar – jetzt herunterladen")
+        self._update_banner_lbl.setStyleSheet(
+            "color: white; font-weight: 600; font-size: 13px;"
+        )
+        h.addWidget(self._update_banner_lbl, 1)
+        arrow = QLabel("↓")
+        arrow.setStyleSheet("color: white; font-size: 16px; font-weight: 700;")
+        h.addWidget(arrow)
+        # Klick auf den gesamten Banner -> Download-URL oeffnen.
+        banner.mousePressEvent = self._on_update_banner_click
+        return banner
+
+    def _show_update_banner(self, result):
+        """Slot fuer update_available_changed. result = (tag, url) oder None."""
+        if not result:
+            self._update_url = None
+            self._update_banner.hide()
+            return
+        try:
+            tag, url = result
+        except Exception:
+            return
+        self._update_url = url
+        self._update_banner_lbl.setText(
+            f"Update {tag} verfügbar – jetzt herunterladen"
+        )
+        self._update_banner.show()
+
+    def _on_update_banner_click(self, _ev):
+        if not self._update_url:
+            return
+        try:
+            QDesktopServices.openUrl(QUrl(self._update_url))
+        except Exception as e:
+            log.warning(f"Update-Download konnte nicht geoeffnet werden: {e}")
 
 
 # =====================================================================
@@ -5417,6 +5494,10 @@ class IQspeakrApp(QObject):
     # Tastatur-Hook-Fallback (fuer Apps, die UIA blockieren - z.B. WhatsApp/
     # Electron). Listener-Thread emittiert, Main-Thread wertet aus.
     autolearn_keyhook_done_sig = Signal()
+    # Update-Hinweis: vom Update-Check-Worker emittiert, von HomeView /
+    # SettingsView abonniert. Tragender Wert: (tag, url) oder None (kein
+    # Update mehr - z.B. nach Neustart auf der neuen Version).
+    update_available_changed = Signal(object)
 
     def __init__(self, qapp, splash=None):
         super().__init__()
@@ -5534,7 +5615,14 @@ class IQspeakrApp(QObject):
             if result:
                 self.update_available = result
                 tag = result[0]
-                self.notify_sig.emit("IQspeakr-Update", f"{tag} ist verfuegbar", "info")
+                # level="update" => System-Notification erscheint AUCH wenn der
+                # User Tray-Benachrichtigungen sonst ausgeschaltet hat (siehe
+                # _on_notify). Update-Hinweise sind zu wichtig, um sie still
+                # zu verlieren - und sie hoeren von selbst auf, sobald die
+                # neue Version installiert ist (check_for_update gibt dann None).
+                self.notify_sig.emit("IQspeakr-Update", f"{tag} ist verfuegbar", "update")
+                # HomeView-Banner + SettingsView-Status reagieren auf dieses Signal.
+                self.update_available_changed.emit(result)
         except Exception as e:
             log.info(f"Update-Check uebersprungen: {e}")
 
@@ -5550,7 +5638,9 @@ class IQspeakrApp(QObject):
         # Info-Notifications nur zeigen wenn der User sie eingeschaltet hat.
         # Error-Notifications IMMER zeigen, sonst sieht der User nicht wenn
         # was Kaputtes passiert (Modell-Lade-Fehler, Whisper-Crash, ...).
-        if level != "error" and not self.config.get("notify_enabled", True):
+        # Update-Hinweise auch IMMER zeigen - sie hoeren nach dem Update von
+        # selbst auf, vorher will der User aktiv erinnert werden.
+        if level not in ("error", "update") and not self.config.get("notify_enabled", True):
             return
         try:
             self.tray.showMessage(title, message, QSystemTrayIcon.Information, 4000)
