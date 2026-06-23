@@ -5414,6 +5414,9 @@ class IQspeakrApp(QObject):
     # Wörterbuch-Auto-Lernen: aus dem Transkriptions-Thread wird über dieses
     # Signal an den Main-Thread weitergereicht (UIA = COM, nicht thread-safe).
     autolearn_sig = Signal(str)
+    # Tastatur-Hook-Fallback (fuer Apps, die UIA blockieren - z.B. WhatsApp/
+    # Electron). Listener-Thread emittiert, Main-Thread wertet aus.
+    autolearn_keyhook_done_sig = Signal()
 
     def __init__(self, qapp, splash=None):
         super().__init__()
@@ -5500,6 +5503,14 @@ class IQspeakrApp(QObject):
         self._autolearn_pending = None
         self._autolearn_token = 0
         self.autolearn_sig.connect(self._autolearn_begin)
+        # Tastatur-Hook-Fallback (Apps wie WhatsApp blocken UIA-Value-Reads).
+        # KEIN zweiter Listener - wir klinken uns in den bestehenden pynput-
+        # Listener (siehe _on_key_press) und puffern Tasten waehrend eines
+        # Beobachtungsfensters. Auswertung im Main-Thread per Signal.
+        self._keyhook_recording = False
+        self._keyhook_buffer = []
+        self._keyhook_inserted = ""
+        self.autolearn_keyhook_done_sig.connect(self._autolearn_keyhook_finalize)
 
         # Whisper-Modell laden (Thread)
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -6096,15 +6107,19 @@ class IQspeakrApp(QObject):
 
     def _autolearn_start(self, inserted_text):
         """Main-Thread. Liest den Ausgangszustand des Zielfelds und startet die
-        Beobachtungs-Schleife. Loggt klar, falls die App kein auslesbares Feld
-        bietet (haeufig bei manchen Electron-Apps) — damit man im IQspeakr.log
-        sieht, warum nichts gelernt wurde."""
+        Beobachtungs-Schleife. Wenn die App ihr Eingabefeld nicht ueber UIA
+        freigibt (z.B. WhatsApp/Electron), fallen wir auf einen Tastatur-Hook-
+        Fallback zurueck, der die manuelle Korrektur direkt im pynput-Listener
+        mitschneidet."""
+        # Vorherige Hook-Beobachtung beenden - egal welcher Pfad jetzt greift.
+        self._keyhook_recording = False
         element, v0 = self._uia_focused_value()
         if element is None or v0 is None:
             log.info(
-                "Auto-Lernen: Zielfeld nicht auslesbar (App gibt keinen "
-                "UIA-Wert frei, z.B. manche Electron-Apps) - uebersprungen."
+                "Auto-Lernen: Zielfeld nicht auslesbar (UIA blockiert, "
+                "z.B. WhatsApp/Electron) - verwende Tastatur-Hook-Fallback."
             )
+            self._autolearn_keyhook_start(inserted_text)
             return
         self._autolearn_token += 1
         token = self._autolearn_token
@@ -6267,6 +6282,173 @@ class IQspeakrApp(QObject):
         if w.lower() in self._AUTOLEARN_STOPWORDS:
             return False
         return True
+
+    # --- Tastatur-Hook-Fallback (fuer WhatsApp/Electron) ---
+    # Wird aktiviert, wenn UIA das Zielfeld nicht freigibt. Statt das Feld zu
+    # pollen, hoeren wir im bestehenden pynput-Listener mit, was der User
+    # tippt, bis Enter/Tab kommt oder das Beobachtungsfenster ablaeuft.
+    # KEIN zweiter Listener, KEINE neue Berechtigung, KEIN extra Thread.
+    # Im Listener-Callback NUR Buffer-Append - Auswertung im Main-Thread.
+
+    # Modifier-Tasten, die alleine gedrueckt werden (Shift fuer Grossbuchsta-
+    # ben, Strg/Alt/Win/...). Diese duerfen den aktuellen Tipp-Block NICHT
+    # zerteilen, sonst sieht der Algorithmus statt "Claude" lauter Einzel-
+    # Buchstaben mit Separatoren dazwischen.
+    _KEYHOOK_MODIFIERS = tuple(
+        k for k in (
+            getattr(Key, n, None) for n in (
+                "shift", "shift_l", "shift_r",
+                "ctrl", "ctrl_l", "ctrl_r",
+                "alt", "alt_l", "alt_r", "alt_gr",
+                "cmd", "cmd_l", "cmd_r",
+                "caps_lock", "num_lock", "scroll_lock",
+            )
+        )
+        if k is not None
+    )
+
+    def _autolearn_keyhook_start(self, inserted_text):
+        """Main-Thread. Aktiviert den Tastatur-Hook-Fallback fuer dieselbe
+        Beobachtungs-Dauer wie der UIA-Pfad. Token-erhoehung sorgt dafuer,
+        dass eine vorherige (parallele) Beobachtung sauber verfaellt."""
+        self._autolearn_token += 1
+        token = self._autolearn_token
+        self._keyhook_inserted = inserted_text
+        self._keyhook_buffer = []
+        self._keyhook_recording = True
+        log.info(
+            "Auto-Lernen (Hook-Fallback) aktiv: hoere ~"
+            f"{int(self._AUTOLEARN_WINDOW)}s auf manuelle Korrektur."
+        )
+        QTimer.singleShot(
+            int(self._AUTOLEARN_WINDOW * 1000),
+            lambda: self._autolearn_keyhook_timeout(token),
+        )
+
+    def _autolearn_keyhook_timeout(self, token):
+        """Main-Thread. Timeout - falls noch aktiv: auswerten, was bisher
+        getippt wurde. Veraltete Tokens (neue Aufnahme dazwischen) ignorieren."""
+        if token != self._autolearn_token:
+            return
+        if not self._keyhook_recording:
+            return
+        self._keyhook_recording = False
+        self._autolearn_keyhook_finalize()
+
+    def _keyhook_capture(self, key):
+        """Listener-Thread. Sammelt Tasten waehrend der Beobachtung. HIER NUR
+        appendieren - keine I/O, kein Logging, keine teure Berechnung. Alles
+        Heavy-Lifting passiert im Main-Thread (Slot _autolearn_keyhook_finalize).
+        Niemals Exceptions hochlassen, sonst stirbt der Listener."""
+        try:
+            # Modifier alleine (Shift/Strg/Alt/...) ignorieren, sonst wird
+            # jedes Grossbuchstaben-Tippen in Einzelteile zerlegt.
+            if key in self._KEYHOOK_MODIFIERS:
+                return
+            # Enter / Tab -> User hat 'gesendet' bzw. zum naechsten Feld
+            # gewechselt; jetzt auswerten.
+            if key == Key.enter or key == Key.tab:
+                self._keyhook_recording = False
+                self.autolearn_keyhook_done_sig.emit()
+                return
+            # Escape -> User hat abgebrochen; Buffer verwerfen, NICHT lernen.
+            if key == Key.esc:
+                self._keyhook_recording = False
+                self._keyhook_buffer = []
+                return
+            # Backspace -> letztes Zeichen aus dem aktuellen Tipp-Block.
+            if key == Key.backspace:
+                buf = self._keyhook_buffer
+                if buf and isinstance(buf[-1], str) and not buf[-1].startswith("<"):
+                    buf[-1] = buf[-1][:-1]
+                    if not buf[-1]:
+                        buf.pop()
+                return
+            # Druckbares Zeichen -> aktuellen Tipp-Block verlaengern bzw.
+            # neuen anfangen.
+            ch = getattr(key, "char", None)
+            if isinstance(ch, str) and ch and ch.isprintable():
+                buf = self._keyhook_buffer
+                if buf and isinstance(buf[-1], str) and not buf[-1].startswith("<"):
+                    buf[-1] += ch
+                else:
+                    buf.append(ch)
+                return
+            # Pfeil/Pos1/Ende/Page... -> Cursor-Sprung. Aktuellen Block schliessen.
+            buf = self._keyhook_buffer
+            if buf and isinstance(buf[-1], str) and not buf[-1].startswith("<"):
+                buf.append("<SEP>")
+        except Exception:
+            # Listener darf NIE sterben - sonst funktioniert auch der Hotkey nicht mehr.
+            pass
+
+    def _autolearn_keyhook_finalize(self):
+        """Main-Thread-Slot. Wertet den Buffer aus, committet eine Ein-Wort-
+        Korrektur falls eindeutig erkennbar. Bei Mehrdeutigkeit oder leerem
+        Buffer: still bleiben (lieber nichts lernen als Muell ins Woerterbuch)."""
+        self._keyhook_recording = False
+        # Atomar 'swap & clear' - selbst wenn der Listener-Thread nach unserem
+        # Recording-Flag-Reset noch ein letztes Mal anfaengt zu schreiben, geht
+        # das in den (jetzt verwaisten) alten Buffer und schadet uns nicht.
+        buffer_ref = self._keyhook_buffer
+        self._keyhook_buffer = []
+        inserted = self._keyhook_inserted
+        self._keyhook_inserted = ""
+        if not inserted or not buffer_ref:
+            log.debug("Auto-Lernen (Hook): leerer Buffer, nichts zu lernen.")
+            return
+        try:
+            pair = self._single_word_correction_from_keys(inserted, list(buffer_ref))
+        except Exception as e:
+            log.debug(f"Auto-Lernen (Hook): Auswertung fehlgeschlagen: {e}")
+            return
+        if pair:
+            self._autolearn_commit(*pair)
+        else:
+            log.debug(
+                "Auto-Lernen (Hook): keine eindeutige Ein-Wort-Korrektur erkannt."
+            )
+
+    def _single_word_correction_from_keys(self, inserted, buffer):
+        """Sucht im Tastatur-Buffer GENAU eine lernwuerdige (alt, neu)-Paarung.
+        - 'neu' = ein zusammenhaengend getippter Wort-Block.
+        - 'alt' = das aehnlichste Wort aus dem urspruenglich eingefuegten Text.
+        Konservativ: bei Mehrdeutigkeit (kein klarer Sieger) None zurueck.
+        Gleiche Wort-Regex und Aehnlichkeits-Schwelle wie der UIA-Pfad."""
+        import difflib
+        word_re = re.compile(r"[A-Za-zÄÖÜäöüßéèêàâ][A-Za-zÄÖÜäöüßéèêàâ\-]+")
+        typed_words = []
+        for item in buffer:
+            if not isinstance(item, str) or item.startswith("<"):
+                continue
+            typed_words.extend(word_re.findall(item))
+        candidates = [w for w in typed_words if self._is_learnable_word(w)]
+        if not candidates:
+            return None
+        targets = [w for w in word_re.findall(inserted)
+                   if self._is_learnable_word(w)]
+        if not targets:
+            return None
+        scored = []
+        for new in candidates:
+            for old in targets:
+                if old.lower() == new.lower():
+                    continue
+                ratio = difflib.SequenceMatcher(
+                    a=old.lower(), b=new.lower(),
+                ).ratio()
+                if ratio < 0.34 and old[:1].lower() != new[:1].lower():
+                    continue
+                scored.append((ratio, old, new))
+        if not scored:
+            return None
+        scored.sort(key=lambda t: t[0], reverse=True)
+        best = scored[0]
+        # Eindeutigkeits-Guard: zweitbeste Paarung muss spuerbar schlechter
+        # sein, sonst kann 'Klod' sowohl 'Claude' als auch 'Cloud' meinen.
+        if len(scored) > 1 and (best[0] - scored[1][0]) < 0.1:
+            return None
+        return (best[1], best[2])
 
     # --- Modell laden ---
 
@@ -6456,6 +6638,11 @@ class IQspeakrApp(QObject):
     def _on_key_press(self, key):
         if self._suppress_listener:
             return
+        # Auto-Lern-Hook (Fallback fuer Apps, die UIA blockieren): nur appen-
+        # dieren, niemals returnen - der bestehende Hotkey-Pfad muss weiter
+        # laufen, damit der User mitten in der Beobachtung neu aufnehmen kann.
+        if self._keyhook_recording:
+            self._keyhook_capture(key)
         try:
             if self._modifier_only_mode:
                 if not self._key_belongs_to_hotkey(key):
