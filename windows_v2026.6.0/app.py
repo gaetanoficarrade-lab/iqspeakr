@@ -4191,6 +4191,27 @@ class DictionaryView(QWidget):
 #  Settings-View: Hotkey, Whisper, Sprache + Ollama-State-Maschine.
 # =====================================================================
 
+class _NoWheelComboBox(QComboBox):
+    """QComboBox, die Mausrad-Events nur akzeptiert, wenn sie tatsaechlich
+    den Tastatur-Fokus hat (= User hat sie aktiv angeklickt). Sonst wird das
+    Event ignoriert und wandert ans Parent (ScrollArea) - die User-Erwartung
+    beim Scrollen durch die Settings: nichts darf sich aendern, nur weil der
+    Cursor zufaellig ueber einer Combo steht."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # StrongFocus: Combo kriegt Fokus durch Click/Tab, NICHT durch Mouse-
+        # Over. Wheel-Events veraendern den Wert dann nur in dem Fall, wo der
+        # User die Combo bewusst aktiviert hat.
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 class SettingsView(QWidget):
     # Update-Check läuft in einem Daemon-Thread; das Ergebnis (None oder
     # (tag, url)) wird über dieses Signal zurück in den Main-Thread gehoben.
@@ -4251,7 +4272,7 @@ class SettingsView(QWidget):
         hot_row.addWidget(hot_btn)
         gl.addRow(self._form_label("Tastenkombination"), self._wrap_row(hot_row))
 
-        self._whisper_combo = QComboBox()
+        self._whisper_combo = _NoWheelComboBox()
         for size, label in (
             ("tiny",   "tiny - Sehr schnell, ungenau (~75 MB)"),
             ("base",   "base - Guter Kompromiss (~145 MB)"),
@@ -4267,7 +4288,7 @@ class SettingsView(QWidget):
         self._whisper_combo.currentIndexChanged.connect(self._on_whisper_changed)
         gl.addRow(self._form_label("Whisper-Modell"), self._whisper_combo)
 
-        self._lang_combo = QComboBox()
+        self._lang_combo = _NoWheelComboBox()
         for code, label in (
             ("de", "Deutsch"),
             ("en", "Englisch"),
@@ -4334,7 +4355,7 @@ class SettingsView(QWidget):
         # Modell-Dropdown: speichert nur die Wahl (kein Auto-Pull mehr).
         # Daneben "Modell herunterladen"-Button bzw. "Bereit"-Label, je nach
         # ob das gewählte Modell schon lokal liegt.
-        self._model_combo = QComboBox()
+        self._model_combo = _NoWheelComboBox()
         for key, label in OLLAMA_MODEL_OPTIONS:
             self._model_combo.addItem(label, key)
         cur_m = self.app.config.get("ollama_model", "llama3.2:1b")
@@ -4945,7 +4966,7 @@ class SettingsView(QWidget):
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
 
-        self._api_provider_combo = QComboBox()
+        self._api_provider_combo = _NoWheelComboBox()
         for key in ("groq", "openai"):
             self._api_provider_combo.addItem(API_PROVIDERS[key]["label"], key)
         cur_p = self.app.config.get("api_provider", "groq")
